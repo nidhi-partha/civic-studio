@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Select Interviewee</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300&display=swap">
+    <style>
+        body {
+            font-family: 'Open Sans', sans-serif;
+            background-color: #E6EBF2;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+
+        .main-container {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            width: 100%;
+            max-width: 900px;
+            padding: 20px;
+            margin-top: 20px;
+            border-radius: 10px;
+        }
+
+        h1 {
+            text-align: left;
+            font-size: 24px;
+            margin: 1%;
+        }
+
+        .instructions {
+            text-align: left;
+            font-size: 20px;
+            margin: 20px 0;
+            margin: 1%;
+        }
+
+        .interviewee-container {
+            margin-top: 20px;
+            margin-bottom: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-start;
+            align-items: flex-start;
+            width: 110%;
+        }
+
+        .interviewee {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 35%;
+            max-width: 250px;
+            height: 350px;
+            margin: 1%;
+            padding: 20px;
+            text-align: center;
+            border: 1px solid #ccc;
+            border-radius: 10px;
+            cursor: pointer;
+            background-color: white;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .interviewee img {
+            width: 200px;
+            height: 200px;
+            border-radius: 50%;
+            margin-bottom: 10px;
+        }
+
+        .interviewee p {
+            font-size: 16px;
+            margin: 5px 0;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        button {
+            display: block;
+            width: 150px;
+            padding: 15px;
+            font-size: 18px;
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 20px;
+            margin-left: 1%;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        .interviewee.selected {
+            border-color: #007BFF;
+            background-color: #f0f8ff;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="main-container">
+        <h1>Identified Interviewees</h1>
+        <p class="instructions">Choose an interviewee</p>
+        <div class="interviewee-container" id="interviewee-list"></div>
+        <button onclick="goToReadingPage()">Next</button>
+    </div>
+
+    <script src="claude-api.js"></script>
+    <script src="openai-api.js"></script>
+    <script>
+        let img = '';
+        document.addEventListener('DOMContentLoaded', async (event) => {
+            try {
+
+
+                let interviewees = JSON.parse(localStorage.getItem('interviewees'));
+                if (!Array.isArray(interviewees) || interviewees.length === 0) {
+                    throw new Error('Interviewees is not an array or is empty');
+                }
+
+                // Slice the interviewees array to ignore the first line
+                interviewees = interviewees.slice(1, interviewees.length);
+
+                const intervieweeList = document.getElementById('interviewee-list');
+                let guyIndex = 1;
+                let girlIndex = 1;
+
+                for (const interviewee of interviewees) {
+                    const name = interviewee.split(':')[0];
+                    const details = interviewee.split(':')[1] || 'Details not provided';
+                    const imgSrc = await getGenderImage(name, guyIndex, girlIndex);
+
+                    const div = document.createElement('div');
+                    div.className = 'interviewee';
+                    div.innerHTML = `
+                       <img src="${imgSrc}" alt="${name}" class="icon">
+                       <p><strong>${name}</strong>: ${details}</p>
+                   `;
+                    div.onclick = () => selectInterviewee(div, interviewee, imgSrc);
+                    intervieweeList.appendChild(div);
+
+                    if (imgSrc.includes('guy')) {
+                        guyIndex = guyIndex === 3 ? 1 : guyIndex + 1;
+                    } else {
+                        girlIndex = girlIndex === 3 ? 1 : girlIndex + 1;
+                    }
+                }
+            } catch (error) {
+                console.error('Error parsing interviewees from localStorage', error);
+                alert('Failed to load interviewees. Please try again.');
+            }
+        });
+
+        let selectedInterviewee = '';
+        let genders = {};
+
+        async function getGenderImage(name, guyIndex, girlIndex) {
+            const prompt = `Is the name "${name}" typically associated with a male or female? Respond with "male" or "female".`;
+            const response = await callClaude(prompt); // TODO change to callOpenAI
+            console.log(name + " " + response);
+            const gender = response.trim().toLowerCase();
+            if (gender === 'female') {
+                genders[name] = 'female';
+                return `icons/interviewee-girl-${girlIndex}.png`;
+            } else {
+                genders[name] = 'male';
+                return `icons/interviewee-guy-${guyIndex}.png`;
+            }
+            console.log(genders);
+        }
+
+        function selectInterviewee(div, interviewee, imgSrc) {
+            document.querySelectorAll('.interviewee').forEach((element) => {
+                element.classList.remove('selected');
+            });
+
+            div.classList.add('selected');
+            selectedInterviewee = interviewee;
+            name = interviewee.split(':')[0];
+            console.log(genders[name]);
+            console.log(imgSrc);
+            img = imgSrc;
+
+            localStorage.setItem('intervieweeGender', genders[name]);
+            localStorage.setItem('selectedInterviewee', interviewee);
+            localStorage.setItem('intervieweeName', name);
+            localStorage.setItem('selectedIntervieweeImage', imgSrc);
+        }
+
+        function saveInfo() {
+            let x = JSON.parse(localStorage.getItem("intervieweeNameList"));
+            if (!x.includes(name)) {
+                x.push(name);
+                localStorage.setItem("intervieweeNameList", JSON.stringify(x));
+                let i = JSON.parse(localStorage.getItem("intervieweeImageList"));
+                i.push(img);
+                localStorage.setItem("intervieweeImageList", JSON.stringify(i));
+            }
+
+            console.log(localStorage.getItem("intervieweeImageList"));
+        }
+
+        function goToReadingPage() {
+            if (selectedInterviewee === '') {
+                alert('Please select an interviewee.');
+                return;
+            }
+            // localStorage.removeItem("intervieweeNameList");
+            //     localStorage.removeItem("intervieweeImageList");
+            try {
+                saveInfo();
+
+            } catch {
+                localStorage.removeItem("intervieweeNameList");
+                localStorage.removeItem("intervieweeImageList");
+                saveInfo();
+            }
+
+
+            window.location.href = 'reading-page.html';
+        }
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Input Article</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300&display=swap">
+    <style>
+        body {
+            font-family: 'Open Sans', sans-serif;
+            background-color: #E8F1FC;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+
+        p {
+            font-size: 20px;
+            margin-top: 0;
+            margin-bottom: 20px;
+            font-weight: 300;
+        }
+
+        textarea {
+            font-family: 'Open Sans', sans-serif;
+            font-weight: 300;
+            width: 80%;
+            height: 300px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 10px;
+            border: 1px solid #ccc;
+            font-size: 16px;
+            resize: none;
+        }
+
+        button {
+            font-family: 'Open Sans', sans-serif;
+            width: 150px;
+            padding: 15px;
+            font-size: 18px;
+            font-weight: 300;
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        #logo {
+            width: 400px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <img src="icons/logo.png" alt="Logo" id="logo">
+    <p>Input an article of your choice</p>
+    <textarea id="article-input" placeholder="Paste your article here..."></textarea>
+    <button onclick="processArticle()">Next</button>
+    <script src="claude-api.js"></script>
+    <script src="openai-api.js"></script>
+    <script>
+        async function processArticle() {
+            console.log("processing...");
+            const articleText = document.getElementById('article-input').value;
+
+            if (articleText.trim() === '') {
+                alert('Please input an article.');
+                return;
+            }
+
+            const prompt = `Identify the main interviewees (max 3) in the following article:\n\n${articleText}\n\n. PLEASE RESPOND IN THIS FORMAT, USE A COLON AFTER. name:description \n name:description \n etc.`;
+            const response = await callClaude(prompt);
+            console.log(response);
+            const interviewees = response.split('\n').filter(name => name.trim() !== '');
+            console.log(interviewees);
+
+            localStorage.setItem('articleText', articleText);
+            localStorage.setItem('interviewees', JSON.stringify(interviewees));
+            localStorage.setItem("intervieweeNameList", JSON.stringify([]));
+            localStorage.setItem("intervieweeImageList", JSON.stringify([]));
+            localStorage.setItem("transcriptList", JSON.stringify([]));
+            localStorage.setItem("transcripts", JSON.stringify([]));
+            console.log(localStorage.getItem("intervieweeNameList"));
+
+            window.location.href = 'select-interviewee.html';
+        }
+    </script>
+</body>
+
+</html>
