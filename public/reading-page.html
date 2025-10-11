@@ -1026,7 +1026,6 @@
                     qaBlock.remove(); // Remove the Q&A block
                     iconContainer.remove(); // Remove the icon container as well
                     additionalQuestionsDiv.remove(); // Remove additional questions if any
-                    console.log('Deleted Q&A block:', question);
                 });
             }
 
@@ -1625,25 +1624,6 @@ Here is the REAL transcript that you MUST grade: ` + full_transcript;
                         personality_index = (personality_index + 1) % 8;
                         alert("great job with the current personality! you may see some changes in the interviewees personality now!")
                     }
-
-
-                    // Construct the prompt for feedback on the full transcript
-                    //     const feedbackPrompt = `
-                    // Please provide detailed, constructive feedback on the following interview transcript.
-                    // Focus on aspects such as question clarity, depth of inquiry, interviewee engagement,
-                    // and the overall flow of the interview. Additionally, suggest any improvements or alternative approaches
-                    // the interviewer could consider. Here is the transcript:
-
-
-                    // ${full_transcript.join(' ')}
-
-
-                    // Your answer should be just one paragraph.`;
-
-
-                    // Call OpenAI API to get feedback
-                    // const feedbackResponse = await callOpenAI(feedbackPrompt);
-                    // console.log(feedback);
 
 
                     // Use the TTS function to synthesize the feedback

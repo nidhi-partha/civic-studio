@@ -72,9 +72,13 @@
     <script src="openai-api.js"></script>
     <script>
         async function processArticle() {
-            console.log("processing...");
-            const articleText = document.getElementById('article-input').value;
-
+            const articleInput = document.getElementById('article-input');
+            if (!articleInput) {
+                alert('Error: Article input field not found.');
+                return;
+            }
+            
+            const articleText = articleInput.value;
             if (articleText.trim() === '') {
                 alert('Please input an article.');
                 return;
@@ -85,14 +89,12 @@
             console.log(response);
             const interviewees = response.split('\n').filter(name => name.trim() !== '');
             console.log(interviewees);
-
             localStorage.setItem('articleText', articleText);
             localStorage.setItem('interviewees', JSON.stringify(interviewees));
             localStorage.setItem("intervieweeNameList", JSON.stringify([]));
             localStorage.setItem("intervieweeImageList", JSON.stringify([]));
             localStorage.setItem("transcriptList", JSON.stringify([]));
             localStorage.setItem("transcripts", JSON.stringify([]));
-            console.log(localStorage.getItem("intervieweeNameList"));
 
             window.location.href = 'select-interviewee.html';
         }

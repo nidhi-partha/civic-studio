@@ -4,14 +4,18 @@ async function callClaude(prompt) {
         const apiKey = await getClaudeApiKey();
 
         const requestBody = {
-            model: "claude-2",
-            prompt: `\n\nHuman: ${prompt}\n\nAssistant:`,
-            max_tokens_to_sample: 4096,
-            temperature: 0.5,
-            stop_sequences: ["\n\nHuman:"],
+            model: "claude-3-5-haiku-20241022",
+            max_tokens: 4096,
+            messages: [
+                {
+                    role: "user",
+                    content: prompt
+                }
+            ],
+            temperature: 0.5
         };
 
-        const response = await fetch('/claude/v1/complete', {
+        const response = await fetch('/claude/v1/messages', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -23,7 +27,6 @@ async function callClaude(prompt) {
         });
 
         if (!response.ok) {
-            // Log detailed error information
             const errorText = await response.text();
             console.error('Claude API Error:', {
                 status: response.status,
@@ -34,11 +37,10 @@ async function callClaude(prompt) {
         }
 
         const data = await response.json();
-        return data.completion.trim();
+        return data.content[0].text;
 
     } catch (error) {
         console.error('Claude API Call Failed:', error);
-        // Rethrow to allow caller to handle the error
         throw error;
     }
 }

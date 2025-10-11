@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Infinite Canvas</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+        }
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            position: relative;
+            background-color: #f5f5f5;
+        }
+        #canvas {
+            position: absolute;
+            background-image: radial-gradient(circle, #ccc 1px, transparent 1px);
+            background-size: 20px 20px;
+            transform-origin: 0 0;
+        }
+        .node {
+            position: absolute;
+            width: 150px;
+            padding: 10px;
+            background-color: white;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            cursor: move;
+            user-select: none;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            z-index: 1;
+        }
+        .edge {
+            position: absolute;
+            background-color: #333;
+            height: 2px;
+            transform-origin: 0 0;
+            z-index: 0;
+        }
+        .controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: white;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            z-index: 2;
+        }
+        .controls button {
+            margin: 2px;
+            padding: 5px 10px;
+        }
+        .minimap {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            width: 150px;
+            height: 100px;
+            background-color: white;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            overflow: hidden;
+            z-index: 2;
+        }
+        .minimap-content {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+        .minimap-node {
+            position: absolute;
+            background-color: blue;
+            width: 6px;
+            height: 6px;
+            margin-left: -3px;
+            margin-top: -3px;
+        }
+        .minimap-viewport {
+            position: absolute;
+            border: 1px solid red;
+            background-color: rgba(255, 0, 0, 0.1);
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <div id="canvas"></div>
+        <div class="controls">
+            <button id="add-node">Add Node</button>
+            <button id="zoom-in">+</button>
+            <button id="zoom-out">-</button>
+            <button id="reset">Reset View</button>
+            <div style="margin-top: 8px; font-size: 12px;">Double-click to add node</div>
+        </div>
+        <div class="minimap">
+            <div class="minimap-content">
+                <div class="minimap-viewport"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Main canvas elements
+        const canvasContainer = document.getElementById('canvas-container');
+        const canvas = document.getElementById('canvas');
+        
+        // Control buttons
+        const addNodeBtn = document.getElementById('add-node');
+        const zoomInBtn = document.getElementById('zoom-in');
+        const zoomOutBtn = document.getElementById('zoom-out');
+        const resetBtn = document.getElementById('reset');
+        
+        // Minimap elements
+        const minimapContent = document.querySelector('.minimap-content');
+        const minimapViewport = document.querySelector('.minimap-viewport');
+        
+        // Canvas state
+        let scale = 1;
+        let offsetX = 0;
+        let offsetY = 0;
+        let isDragging = false;
+        let startX = 0;
+        let startY = 0;
+        let nodeCounter = 0;
+        const nodes = [];
+        const edges = [];
+        
+        // Make canvas very large (infinite-like)
+        canvas.style.width = '10000px';
+        canvas.style.height = '10000px';
+        
+        // Apply initial transform
+        updateCanvasTransform();
+        
+        // Pan functionality
+        canvasContainer.addEventListener('mousedown', (e) => {
+            // Ignore if clicking on a node or control
+            if (e.target !== canvas && e.target !== canvasContainer) return;
+            
+            isDragging = true;
+            startX = e.clientX - offsetX;
+            startY = e.clientY - offsetY;
+            canvasContainer.style.cursor = 'grabbing';
+        });
+        
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            
+            offsetX = e.clientX - startX;
+            offsetY = e.clientY - startY;
+            updateCanvasTransform();
+            updateMinimap();
+        });
+        
+        document.addEventListener('mouseup', () => {
+            isDragging = false;
+            canvasContainer.style.cursor = 'default';
+        });
+        
+        // Zoom functionality
+        canvasContainer.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            
+            // Calculate mouse position relative to canvas
+            const rect = canvasContainer.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            // Calculate mouse position in canvas space
+            const oldMouseCanvasX = (mouseX - offsetX) / scale;
+            const oldMouseCanvasY = (mouseY - offsetY) / scale;
+            
+            // Update scale
+            if (e.deltaY < 0) {
+                scale *= 1.1; // Zoom in
+            } else {
+                scale *= 0.9; // Zoom out
+            }
+            
+            // Limit scale
+            scale = Math.max(0.1, Math.min(scale, 5));
+            
+            // Calculate new mouse position in canvas space
+            const newMouseCanvasX = (mouseX - offsetX) / scale;
+            const newMouseCanvasY = (mouseY - offsetY) / scale;
+            
+            // Adjust offset to keep mouse position fixed
+            offsetX += (oldMouseCanvasX - newMouseCanvasX) * scale;
+            offsetY += (oldMouseCanvasY - newMouseCanvasY) * scale;
+            
+            updateCanvasTransform();
+            updateMinimap();
+        });
+        
+        // Double click to add node
+        canvasContainer.addEventListener('dblclick', (e) => {
+            // Ignore if double-clicking on a node or control
+            if (e.target !== canvas && e.target !== canvasContainer) return;
+            
+            const rect = canvasContainer.getBoundingClientRect();
+            const canvasX = (e.clientX - rect.left - offsetX) / scale;
+            const canvasY = (e.clientY - rect.top - offsetY) / scale;
+            
+            addNode(canvasX, canvasY);
+        });
+        
+        // Control buttons
+        addNodeBtn.addEventListener('click', () => {
+            // Add node in the center of the viewport
+            const rect = canvasContainer.getBoundingClientRect();
+            const canvasX = (rect.width / 2 - offsetX) / scale;
+            const canvasY = (rect.height / 2 - offsetY) / scale;
+            
+            addNode(canvasX, canvasY);
+        });
+        
+        zoomInBtn.addEventListener('click', () => {
+            // Zoom in centered on viewport
+            const rect = canvasContainer.getBoundingClientRect();
+            const centerX = rect.width / 2;
+            const centerY = rect.height / 2;
+            
+            const oldCenterCanvasX = (centerX - offsetX) / scale;
+            const oldCenterCanvasY = (centerY - offsetY) / scale;
+            
+            scale *= 1.2;
+            scale = Math.min(scale, 5);
+            
+            const newCenterCanvasX = (centerX - offsetX) / scale;
+            const newCenterCanvasY = (centerY - offsetY) / scale;
+            
+            offsetX += (oldCenterCanvasX - newCenterCanvasX) * scale;
+            offsetY += (oldCenterCanvasY - newCenterCanvasY) * scale;
+            
+            updateCanvasTransform();
+            updateMinimap();
+        });
+        
+        zoomOutBtn.addEventListener('click', () => {
+            // Zoom out centered on viewport
+            const rect = canvasContainer.getBoundingClientRect();
+            const centerX = rect.width / 2;
+            const centerY = rect.height / 2;
+            
+            const oldCenterCanvasX = (centerX - offsetX) / scale;
+            const oldCenterCanvasY = (centerY - offsetY) / scale;
+            
+            scale *= 0.8;
+            scale = Math.max(scale, 0.1);
+            
+            const newCenterCanvasX = (centerX - offsetX) / scale;
+            const newCenterCanvasY = (centerY - offsetY) / scale;
+            
+            offsetX += (oldCenterCanvasX - newCenterCanvasX) * scale;
+            offsetY += (oldCenterCanvasY - newCenterCanvasY) * scale;
+            
+            updateCanvasTransform();
+            updateMinimap();
+        });
+        
+        resetBtn.addEventListener('click', () => {
+            // Reset view
+            scale = 1;
+            offsetX = 0;
+            offsetY = 0;
+            updateCanvasTransform();
+            updateMinimap();
+        });
+        
+        // Functions
+        function updateCanvasTransform() {
+            canvas.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+        }
+        
+        function addNode(x, y) {
+            const node = document.createElement('div');
+            node.className = 'node';
+            node.innerText = `Node ${++nodeCounter}`;
+            node.style.left = `${x}px`;
+            node.style.top = `${y}px`;
+            
+            // Make nodes draggable
+            let nodeX, nodeY, startNodeX, startNodeY;
+            
+            node.addEventListener('mousedown', (e) => {
+                e.stopPropagation(); // Prevent canvas dragging
+                
+                isDragging = true;
+                startNodeX = parseInt(node.style.left);
+                startNodeY = parseInt(node.style.top);
+                nodeX = e.clientX;
+                nodeY = e.clientY;
+                
+                // Bring to front
+                node.style.zIndex = 10;
+            });
+            
+            document.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                
+                const dx = (e.clientX - nodeX) / scale;
+                const dy = (e.clientY - nodeY) / scale;
+                
+                node.style.left = `${startNodeX + dx}px`;
+                node.style.top = `${startNodeY + dy}px`;
+                
+                // Update connected edges if any
+                updateEdges();
+                updateMinimap();
+            });
+            
+            document.addEventListener('mouseup', () => {
+                if (isDragging) {
+                    node.style.zIndex = 1;
+                    isDragging = false;
+                }
+            });
+            
+            // Connect nodes on click (simple implementation)
+            node.addEventListener('dblclick', (e) => {
+                e.stopPropagation();
+                
+                // If we already have a selected node, connect them
+                if (window.selectedNode && window.selectedNode !== node) {
+                    createEdge(window.selectedNode, node);
+                    window.selectedNode.style.border = '1px solid #ccc';
+                    window.selectedNode = null;
+                } else {
+                    // Select this node
+                    if (window.selectedNode) {
+                        window.selectedNode.style.border = '1px solid #ccc';
+                    }
+                    window.selectedNode = node;
+                    node.style.border = '2px solid blue';
+                }
+            });
+            
+            canvas.appendChild(node);
+            nodes.push(node);
+            
+            // Add to minimap
+            addNodeToMinimap(x, y);
+        }
+        
+        function createEdge(sourceNode, targetNode) {
+            const edge = document.createElement('div');
+            edge.className = 'edge';
+            
+            canvas.appendChild(edge);
+            
+            // Store nodes and edge
+            const edgeData = {
+                element: edge,
+                source: sourceNode,
+                target: targetNode
+            };
+            
+            edges.push(edgeData);
+            updateEdge(edgeData);
+        }
+        
+        function updateEdge(edgeData) {
+            const { element, source, target } = edgeData;
+            
+            // Get positions
+            const sourceRect = source.getBoundingClientRect();
+            const targetRect = target.getBoundingClientRect();
+            const canvasRect = canvas.getBoundingClientRect();
+            
+            // Calculate positions in canvas space
+            const sourceX = (sourceRect.left - canvasRect.left) / scale + sourceRect.width / 2;
+            const sourceY = (sourceRect.top - canvasRect.top) / scale + sourceRect.height / 2;
+            const targetX = (targetRect.left - canvasRect.left) / scale + targetRect.width / 2;
+            const targetY = (targetRect.top - canvasRect.top) / scale + targetRect.height / 2;
+            
+            // Calculate edge properties
+            const dx = targetX - sourceX;
+            const dy = targetY - sourceY;
+            const length = Math.sqrt(dx * dx + dy * dy);
+            const angle = Math.atan2(dy, dx);
+            
+            // Set edge position and rotation
+            element.style.left = `${sourceX}px`;
+            element.style.top = `${sourceY}px`;
+            element.style.width = `${length}px`;
+            element.style.transform = `rotate(${angle}rad)`;
+        }
+        
+        function updateEdges() {
+            edges.forEach(updateEdge);
+        }
+        
+        function addNodeToMinimap(x, y) {
+            const minimapNode = document.createElement('div');
+            minimapNode.className = 'minimap-node';
+            minimapNode.style.left = `${(x / 10000) * 100}%`;
+            minimapNode.style.top = `${(y / 10000) * 100}%`;
+            minimapContent.appendChild(minimapNode);
+        }
+        
+        function updateMinimap() {
+            // Update viewport rectangle in minimap
+            const containerRect = canvasContainer.getBoundingClientRect();
+            const viewportWidth = containerRect.width / (scale * 10000) * 100;
+            const viewportHeight = containerRect.height / (scale * 10000) * 100;
+            const viewportX = (-offsetX / scale / 10000) * 100;
+            const viewportY = (-offsetY / scale / 10000) * 100;
+            
+            minimapViewport.style.left = `${viewportX}%`;
+            minimapViewport.style.top = `${viewportY}%`;
+            minimapViewport.style.width = `${viewportWidth}%`;
+            minimapViewport.style.height = `${viewportHeight}%`;
+            
+            // Update node positions in minimap
+            const minimapNodes = document.querySelectorAll('.minimap-node');
+            nodes.forEach((node, index) => {
+                if (index < minimapNodes.length) {
+                    const x = parseInt(node.style.left);
+                    const y = parseInt(node.style.top);
+                    minimapNodes[index].style.left = `${(x / 10000) * 100}%`;
+                    minimapNodes[index].style.top = `${(y / 10000) * 100}%`;
+                }
+            });
+        }
+        
+        // Initialize with a few nodes
+        addNode(100, 100);
+        addNode(300, 200);
+        addNode(500, 100);
+        
+        // Connect initial nodes
+        setTimeout(() => {
+            createEdge(nodes[0], nodes[1]);
+            createEdge(nodes[1], nodes[2]);
+            updateMinimap();
+        }, 100);
+    </script>
+</body>
+</html>

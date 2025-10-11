@@ -28,6 +28,7 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+
 app.get('/claude-api-key', (req, res) => {
   res.json({ apiKey: process.env.CLAUDE_API_KEY });
 });

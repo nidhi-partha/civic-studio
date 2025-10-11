@@ -167,7 +167,7 @@
 
         async function getGenderImage(name, guyIndex, girlIndex) {
             const prompt = `Is the name "${name}" typically associated with a male or female? Respond with "male" or "female".`;
-            const response = await callClaude(prompt); // TODO change to callOpenAI
+            const response = await callOpenAI(prompt); // TODO change to callOpenAI
             console.log(name + " " + response);
             const gender = response.trim().toLowerCase();
             if (gender === 'female') {
@@ -208,7 +208,7 @@
                 localStorage.setItem("intervieweeImageList", JSON.stringify(i));
             }
 
-            console.log(localStorage.getItem("intervieweeImageList"));
+
         }
 
         function goToReadingPage() {
@@ -216,12 +216,10 @@
                 alert('Please select an interviewee.');
                 return;
             }
-            // localStorage.removeItem("intervieweeNameList");
-            //     localStorage.removeItem("intervieweeImageList");
             try {
                 saveInfo();
-
-            } catch {
+            } catch (error) {
+                console.error('Error saving info:', error);
                 localStorage.removeItem("intervieweeNameList");
                 localStorage.removeItem("intervieweeImageList");
                 saveInfo();

@@ -1,32 +1,52 @@
 async function getOpenAIApiKey() {
-    const response = await fetch('/openai-api-key');
-    const data = await response.json();
-    return data.apiKey;
+    try {
+        const response = await fetch('/openai-api-key');
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        return data.apiKey;
+    } catch (error) {
+        console.error('Failed to fetch OpenAI API key:', error);
+        throw error;
+    }
 }
 
 
 
 
 async function callOpenAI(prompt) {
-    let apiKey = await getOpenAIApiKey();
-    console.log(apiKey);
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-            model: 'gpt-3.5-turbo',
-            messages: [
-                { role: 'user', content: prompt }
-            ],
-            temperature: 0.5
-        })
-    });
+    try {
+        const apiKey = await getOpenAIApiKey();
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+                model: 'gpt-3.5-turbo',
+                messages: [
+                    { role: 'user', content: prompt }
+                ],
+                temperature: 0.5
+            })
+        });
 
-    const data = await response.json();
-    return data.choices[0].message.content.trim();
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (data.choices && data.choices.length > 0) {
+            return data.choices[0].message.content.trim();
+        } else {
+            throw new Error("No valid response from OpenAI API");
+        }
+    } catch (error) {
+        console.error('OpenAI API call failed:', error);
+        throw error;
+    }
 }
 
 function cleanResponse(response) {

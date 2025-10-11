@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Infinite Canvas with Grouped Sticky Notes, PDFs, and Drawing</title>
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;700&family=Patrick+Hand&family=Gochi+Hand&display=swap">
+  <link rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      font-family: 'Open Sans', sans-serif;
+    }
+    .canvas-container {
+      position: relative; /* so absolute positioning works consistently */
+      width: 5000px;
+      height: 5000px;
+      background-color: #ffffff;
+      transform-origin: top left;
+    }
+    .viewport {
+      position: absolute;
+      width: 100vw;
+      height: 100vh;
+      overflow: auto;
+      cursor: grab;
+    }
+    .control-buttons {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .control-buttons button {
+      background-color: #D8E2F1;
+      color: rgb(0, 0, 0);
+      border: none;
+      border-radius: 50px;
+      width: 50px;
+      height: 50px;
+      font-size: 24px;
+      cursor: pointer;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .control-buttons button img {
+      max-width: 100%;
+      max-height: 100%;
+      width: auto;
+      height: auto;
+    }
+    .color-picker {
+      position: fixed;
+      top: 20px;
+      right: 60px;
+      display: none;
+      flex-direction: column;
+      gap: 5px;
+      background-color: white;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+    }
+    .color-picker input {
+      border: none;
+      width: 100%;
+    }
+    .color-picker button {
+      font-family: 'Open Sans', sans-serif;
+      border-radius: 5px;
+      border: none;
+    }
+    .zoom-buttons {
+      position: fixed;
+      bottom: 10px;
+      left: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .zoom-buttons button {
+      background-color: #ffffff;
+      color: #95A3C2;
+      border: none;
+      width: 50px;
+      height: 50px;
+      font-size: 40px;
+      cursor: pointer;
+    }
+    /* Sticky note styling */
+    .sticky-note {
+      position: absolute;
+      width: 200px;
+      height: 150px;
+      background-color: #ffeb3b;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 14px;
+      resize: none;
+      outline: none;
+      border: none;
+      overflow: hidden;
+      cursor: move;
+    }
+    /* Red dashed box for group */
+    .sticky-group {
+      position: absolute;
+      border: 2px dashed red;
+      cursor: move;
+    }
+    /* Style for the generated blue box */
+    .generated-box {
+      background-color: blue;
+      color: white;
+      padding: 10px;
+      border-radius: 5px;
+      position: absolute;
+      cursor: move;
+    }
+    .pdf-wrapper {
+      position: absolute;
+      border: 2px solid #D8E2F1;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+      resize: both;
+      overflow: hidden;
+      cursor: move;
+    }
+    .pdf-wrapper iframe {
+      width: 100%;
+      height: 100%;
+    }
+    .qa-box {
+      position: fixed;
+      top: 190px;
+      right: 70px;
+      width: 300px;
+      height: 400px;
+      background-color: white;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+      overflow-y: auto;
+      display: none;
+    }
+    .qa-block {
+      background-color: #e0f7fa;
+      margin: 10px;
+      padding: 25px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      cursor: grab;
+      white-space: pre-wrap;
+      display: inline-block;
+      max-width: 500px;
+      width: auto;
+      height: auto;
+      overflow-wrap: break-word;
+      position: relative;
+    }
+    .qa-block.dragging {
+      opacity: 0.5;
+    }
+    .delete-button {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      background-color: #fff;
+      color: #000;
+      border: none;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      font-size: 14px;
+      line-height: 18px;
+      text-align: center;
+      cursor: pointer;
+      z-index: 10;
+    }
+    .qa-header {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      padding: 10px;
+      background-color: #f1f1f1;
+      border-bottom: 1px solid #ddd;
+    }
+    .qa-header button {
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    }
+    .qa-block.note {
+      background-color: #b1b1b1;
+      font-family: 'Gochi Hand', cursive;
+    }
+    .start-article-button {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      z-index: 1000;
+    }
+    .start-article-button button {
+      background-color: #28a745;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+      font-family: 'Open Sans', sans-serif;
+    }
+    .start-article-button button:hover {
+      background-color: #218838;
+    }
+    /* Context Menu */
+    #contextMenu {
+      display: none;
+      position: absolute;
+      background-color: #fff;
+      border: 1px solid #ccc;
+      z-index: 9999;
+      font-family: 'Open Sans', sans-serif;
+    }
+    #contextMenu ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    #contextMenu li {
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    #contextMenu li:hover {
+      background-color: #eee;
+    }
+  </style>
+</head>
+<body>
+  <!-- Include the external OpenAI API file -->
+  <script src="openai-api.js"></script>
+  <div class="viewport">
+    <div class="canvas-container" id="canvas">
+      <canvas id="drawingCanvas"></canvas>
+    </div>
+  </div>
+  <div class="control-buttons">
+    <button id="addNoteButton">
+      <img src="icons/stickynote-icon.png" alt="Add Note">
+    </button>
+    <button id="uploadPdfButton">
+      <img src="icons/upload-icon.png" alt="Upload Source">
+    </button>
+    <input type="file" id="fileInput" accept="application/pdf" style="display: none;">
+    <button id="drawButton">
+      <img src="icons/draw-icon.png" alt="Draw">
+    </button>
+    <button id="qaButton">T</button>
+    <button id="clearButton">
+      <img src="icons/clear-icon.png" alt="Clear">
+    </button>
+  </div>
+  <div class="color-picker" id="colorPicker">
+    <label for="colorInput">Choose Note Color:</label>
+    <input type="color" id="colorInput" value="#ffeb3b">
+    <button class="notebutton" id="createNoteButton">Create Note</button>
+  </div>
+  <div class="qa-box" id="qaBox"></div>
+  <div class="zoom-buttons">
+    <button id="zoomInButton"><i class="fas fa-search-plus"></i></button>
+    <button id="zoomOutButton"><i class="fas fa-search-minus"></i></button>
+  </div>
+  <div class="start-article-button">
+    <button id="startArticleButton">Start Writing Article</button>
+  </div>
+  <!-- Context Menu -->
+  <div id="contextMenu"></div>
+  <script>
+    /*****************************************
+     * GLOBAL SETUP
+     ****************************************/
+    const canvas = document.getElementById('canvas');
+    const drawingCanvas = document.getElementById('drawingCanvas');
+    drawingCanvas.width = 5000;
+    drawingCanvas.height = 5000;
+    drawingCanvas.style.position = 'absolute';
+    drawingCanvas.style.top = '0';
+    drawingCanvas.style.left = '0';
+    const drawingContext = drawingCanvas.getContext('2d');
+
+    const addNoteButton = document.getElementById('addNoteButton');
+    const uploadPdfButton = document.getElementById('uploadPdfButton');
+    const fileInput = document.getElementById('fileInput');
+    const drawButton = document.getElementById('drawButton');
+    const zoomInButton = document.getElementById('zoomInButton');
+    const zoomOutButton = document.getElementById('zoomOutButton');
+    const viewport = document.querySelector('.viewport');
+    const colorPicker = document.getElementById('colorPicker');
+    const colorInput = document.getElementById('colorInput');
+    const createNoteButton = document.getElementById('createNoteButton');
+    const qaButton = document.getElementById('qaButton');
+    const qaBox = document.getElementById('qaBox');
+    const startArticleButton = document.getElementById('startArticleButton');
+    const clearButton = document.getElementById('clearButton');
+    const contextMenu = document.getElementById('contextMenu');
+
+    let zoomLevel = 1;
+    let isDrawing = false;
+
+    // Variables for context menu targets
+    let currentRightClickedNote = null;
+    let currentRightClickedGroup = null;
+
+    // Sample Q&A data
+    const qaLists = {
+      interviewee1: [
+        "Q: What is your name?\nA: My name is Alice.",
+        "Q: What is your favorite color?\nA: My favorite color is blue.",
+        "Note: Favorite color is blue this can be important for so and so reason",
+        "Q: Where are you from?\nA: I am from New York."
+      ],
+      interviewee2: [
+        "Q: What is your name?\nA: My name is Bob.",
+        "Q: What is your favorite hobby?\nA: I enjoy hiking.",
+        "Q: What do you do?\nA: I am a software engineer."
+      ],
+      interviewee3: [
+        "Q: What is your name?\nA: My name is Carol.",
+        "Q: What is your profession?\nA: I am a doctor.",
+        "Q: What is your favorite book?\nA: My favorite book is 'To Kill a Mockingbird.'"
+      ]
+    };
+    let currentQAList = qaLists.interviewee1;
+
+    /*****************************************
+     * Q&A BOX
+     ****************************************/
+    qaButton.addEventListener('click', () => {
+      qaBox.style.display = (qaBox.style.display === 'none') ? 'block' : 'none';
+      populateQABox();
+    });
+
+    function populateQABox() {
+      const qaHeader = `
+        <div class="qa-header">
+          <button id="interviewee1">1</button>
+          <button id="interviewee2">2</button>
+          <button id="interviewee3">3</button>
+        </div>
+      `;
+      qaBox.innerHTML = qaHeader;
+
+      currentQAList.forEach((qa, index) => {
+        const block = document.createElement('div');
+        block.className = 'qa-block';
+        block.textContent = qa;
+        block.draggable = true;
+        block.dataset.index = index;
+
+        if (qa.startsWith("Note:")) {
+          block.classList.add('note');
+        }
+
+        const deleteButton = document.createElement('button');
+        deleteButton.className = 'delete-button';
+        deleteButton.textContent = '×';
+        deleteButton.addEventListener('click', (e) => {
+          e.stopPropagation();
+          block.remove();
+        });
+        block.appendChild(deleteButton);
+
+        block.addEventListener('dragstart', (e) => {
+          e.dataTransfer.setData('text/plain', qa);
+          block.classList.add('dragging');
+        });
+        block.addEventListener('dragend', () => {
+          block.classList.remove('dragging');
+        });
+
+        qaBox.appendChild(block);
+      });
+
+      document.getElementById('interviewee1').addEventListener('click', () => switchInterviewee('interviewee1'));
+      document.getElementById('interviewee2').addEventListener('click', () => switchInterviewee('interviewee2'));
+      document.getElementById('interviewee3').addEventListener('click', () => switchInterviewee('interviewee3'));
+    }
+
+    function switchInterviewee(interviewee) {
+      currentQAList = qaLists[interviewee];
+      populateQABox();
+    }
+
+    // Enable dropping Q&A blocks onto the canvas
+    canvas.addEventListener('dragover', (e) => {
+      e.preventDefault();
+    });
+    canvas.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const qaText = e.dataTransfer.getData('text/plain');
+      const block = document.createElement('div');
+      block.className = 'qa-block';
+
+      if (qaText.startsWith("Note:")) {
+        block.classList.add('note');
+      }
+
+      block.textContent = qaText;
+      block.style.position = 'absolute';
+      block.style.left = (e.clientX + viewport.scrollLeft) + 'px';
+      block.style.top = (e.clientY + viewport.scrollTop) + 'px';
+
+      const deleteButton = document.createElement('button');
+      deleteButton.className = 'delete-button';
+      deleteButton.textContent = '×';
+      deleteButton.addEventListener('click', (evt) => {
+        evt.stopPropagation();
+        block.remove();
+      });
+      block.appendChild(deleteButton);
+
+      canvas.appendChild(block);
+      makeGroupable(block);
+    });
+
+    /*****************************************
+     * STICKY NOTES & GROUPING
+     ****************************************/
+    function checkGrouping(element) {
+      const allItems = document.querySelectorAll('.sticky-note, .qa-block');
+      allItems.forEach(other => {
+        if (other === element) return;
+        if (isOverlapping(element, other)) {
+          const elemGroup = element.parentElement.classList.contains('sticky-group') ? element.parentElement : null;
+          const otherGroup = other.parentElement.classList.contains('sticky-group') ? other.parentElement : null;
+
+          if (elemGroup && otherGroup && elemGroup !== otherGroup) {
+            mergeStickyGroups(elemGroup, otherGroup);
+            adjustGroupBox(elemGroup);
+          } else if (elemGroup && !otherGroup) {
+            addItemToGroup(elemGroup, other);
+            adjustGroupBox(elemGroup);
+          } else if (!elemGroup && otherGroup) {
+            addItemToGroup(otherGroup, element);
+            adjustGroupBox(otherGroup);
+          } else if (!elemGroup && !otherGroup) {
+            const newGroup = createStickyGroup([element, other]);
+            adjustGroupBox(newGroup);
+          }
+        }
+      });
+    }
+
+    function isOverlapping(el1, el2) {
+      const rect1 = el1.getBoundingClientRect();
+      const rect2 = el2.getBoundingClientRect();
+      return !(rect1.right < rect2.left ||
+               rect1.left > rect2.right ||
+               rect1.bottom < rect2.top ||
+               rect1.top > rect2.bottom);
+    }
+
+    function createStickyGroup(items) {
+      const group = document.createElement('div');
+      group.className = 'sticky-group';
+      group.style.position = 'absolute';
+      canvas.appendChild(group);
+
+      items.forEach(item => {
+        group.appendChild(item);
+      });
+
+      makeGroupDraggable(group);
+      adjustGroupBox(group);
+      return group;
+    }
+
+    function addItemToGroup(group, item) {
+      group.appendChild(item);
+    }
+
+    function mergeStickyGroups(group1, group2) {
+      Array.from(group2.children).forEach(child => {
+        group1.appendChild(child);
+      });
+      group2.remove();
+    }
+
+    function makeGroupDraggable(group) {
+      let isDragging = false;
+      let offsetX, offsetY;
+
+      group.addEventListener('mousedown', (e) => {
+        if (e.target !== group) return;
+        isDragging = true;
+        offsetX = e.clientX - group.offsetLeft;
+        offsetY = e.clientY - group.offsetTop;
+        group.style.cursor = 'grabbing';
+        group.style.zIndex = 1000;
+      });
+
+      document.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        group.style.left = (e.clientX - offsetX) + 'px';
+        group.style.top = (e.clientY - offsetY) + 'px';
+      });
+
+      document.addEventListener('mouseup', () => {
+        if (isDragging) {
+          isDragging = false;
+          group.style.cursor = 'move';
+          group.style.zIndex = '';
+        }
+      });
+
+      group.addEventListener('contextmenu', (e) => {
+        if (e.target === group) {
+          e.preventDefault();
+          showContextMenuForGroup(e.pageX, e.pageY, group);
+        }
+      });
+    }
+
+    function makeGroupable(element) {
+      let isDragging = false;
+      let offsetX, offsetY;
+
+      element.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        offsetX = e.clientX - element.offsetLeft;
+        offsetY = e.clientY - element.offsetTop;
+        element.style.cursor = 'grabbing';
+        element.style.zIndex = 1000;
+      });
+
+      document.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        element.style.left = (e.clientX - offsetX) + 'px';
+        element.style.top = (e.clientY - offsetY) + 'px';
+      });
+
+      document.addEventListener('mouseup', () => {
+        if (!isDragging) return;
+        isDragging = false;
+        element.style.cursor = 'move';
+        element.style.zIndex = '';
+
+        checkGrouping(element);
+
+        const parent = element.parentElement;
+        if (parent && parent.classList.contains('sticky-group')) {
+          adjustGroupBox(parent);
+        }
+      });
+
+      element.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const parent = element.parentElement;
+        if (parent && parent.classList.contains('sticky-group')) {
+          currentRightClickedNote = element;
+          showContextMenu(e.pageX, e.pageY);
+        }
+      });
+    }
+
+    function adjustGroupBox(group) {
+      const children = group.querySelectorAll('.sticky-note, .qa-block, .generated-box');
+      if (!children.length) {
+        group.remove();
+        return;
+      }
+
+      let minLeft = Infinity, minTop = Infinity;
+      let maxRight = -Infinity, maxBottom = -Infinity;
+
+      const groupLeft = parseFloat(group.style.left) || 0;
+      const groupTop  = parseFloat(group.style.top) || 0;
+
+      children.forEach(child => {
+        const childLeft   = parseFloat(child.style.left) || 0;
+        const childTop    = parseFloat(child.style.top) || 0;
+        const childWidth  = child.offsetWidth;
+        const childHeight = child.offsetHeight;
+
+        const absLeft = groupLeft + childLeft;
+        const absTop  = groupTop + childTop;
+
+        if (absLeft < minLeft) minLeft = absLeft;
+        if (absTop < minTop) minTop = absTop;
+        if (absLeft + childWidth > maxRight) maxRight = absLeft + childWidth;
+        if (absTop + childHeight > maxBottom) maxBottom = absTop + childHeight;
+      });
+
+      if (minLeft === Infinity) return;
+
+      group.style.left = minLeft + 'px';
+      group.style.top  = minTop + 'px';
+
+      children.forEach(child => {
+        const oldLeft = parseFloat(child.style.left) || 0;
+        const oldTop  = parseFloat(child.style.top) || 0;
+        const oldAbsLeft = groupLeft + oldLeft;
+        const oldAbsTop  = groupTop + oldTop;
+        child.style.left = (oldAbsLeft - minLeft) + 'px';
+        child.style.top  = (oldAbsTop - minTop) + 'px';
+      });
+
+      const groupWidth  = maxRight - minLeft;
+      const groupHeight = maxBottom - minTop;
+      group.style.width  = groupWidth + 'px';
+      group.style.height = groupHeight + 'px';
+    }
+
+    function removeNoteFromGroup(element) {
+      const group = element.parentElement;
+      if (!group || !group.classList.contains('sticky-group')) return;
+
+      const groupLeft = parseFloat(group.style.left) || 0;
+      const groupTop  = parseFloat(group.style.top) || 0;
+      const elLeft    = parseFloat(element.style.left) || 0;
+      const elTop     = parseFloat(element.style.top) || 0;
+
+      const absoluteLeft = groupLeft + elLeft;
+      const absoluteTop  = groupTop + elTop;
+
+      element.style.left = absoluteLeft + 'px';
+      element.style.top  = absoluteTop + 'px';
+      canvas.appendChild(element);
+
+      adjustGroupBox(group);
+      if (!group.querySelector('.sticky-note, .qa-block, .generated-box')) {
+        group.remove();
+      }
+    }
+
+    /*****************************************
+     * CONTEXT MENU FUNCTIONS
+     ****************************************/
+    function showContextMenu(x, y) {
+      contextMenu.innerHTML = `<ul>
+        <li id="removeFromGroupOption">Remove from group</li>
+      </ul>`;
+      contextMenu.style.display = 'block';
+      contextMenu.style.left = x + 'px';
+      contextMenu.style.top = y + 'px';
+      document.getElementById('removeFromGroupOption').addEventListener('click', () => {
+        if (currentRightClickedNote) {
+          removeNoteFromGroup(currentRightClickedNote);
+        }
+        hideContextMenu();
+      });
+    }
+
+    function showContextMenuForGroup(x, y, group) {
+      contextMenu.innerHTML = `<ul>
+        <li id="generateTextOption">Generate Text</li>
+      </ul>`;
+      currentRightClickedGroup = group;
+      currentRightClickedNote = null;
+      contextMenu.style.display = 'block';
+      contextMenu.style.left = x + 'px';
+      contextMenu.style.top = y + 'px';
+      document.getElementById('generateTextOption').addEventListener('click', async () => {
+        await generateTextForGroup(group);
+        hideContextMenu();
+      });
+    }
+
+    function hideContextMenu() {
+      contextMenu.style.display = 'none';
+      currentRightClickedNote = null;
+      currentRightClickedGroup = null;
+    }
+
+    document.addEventListener('click', (e) => {
+      if (!contextMenu.contains(e.target)) {
+        hideContextMenu();
+      }
+    });
+
+    // Use callOpenAI to create a paragraph from the sticky notes in the group
+    async function generateTextForGroup(group) {
+      const stickyNotes = group.querySelectorAll('.sticky-note');
+      let combinedText = '';
+      stickyNotes.forEach(note => {
+        combinedText += note.value + '\n';
+      });
+      if (combinedText.trim() === '') return;
+      
+      try {
+        const prompt = "Create a cohesive paragraph based on the following notes:\n" + combinedText.trim();
+        // Call the external API function (assumed to be asynchronous)
+        const generatedParagraph = await callOpenAI(prompt);
+        const generatedBox = document.createElement('div');
+        generatedBox.className = 'generated-box';
+        generatedBox.textContent = generatedParagraph;
+        generatedBox.style.left = '10px';
+        generatedBox.style.top = '10px';
+        group.appendChild(generatedBox);
+        // Make the generated box draggable like a sticky note
+        makeGroupable(generatedBox);
+        adjustGroupBox(group);
+      } catch (error) {
+        console.error("Error calling OpenAI:", error);
+      }
+    }
+
+    /*****************************************
+     * CREATE STICKY NOTE / PDF
+     ****************************************/
+    addNoteButton.addEventListener('click', () => {
+      colorPicker.style.display = 'flex';
+    });
+
+    createNoteButton.addEventListener('click', () => {
+      const color = colorInput.value;
+      const stickyNote = document.createElement('textarea');
+      stickyNote.className = 'sticky-note';
+      stickyNote.style.backgroundColor = color;
+      stickyNote.style.top = (viewport.scrollTop + 100) + 'px';
+      stickyNote.style.left = (viewport.scrollLeft + 100) + 'px';
+      canvas.appendChild(stickyNote);
+      makeGroupable(stickyNote);
+      colorPicker.style.display = 'none';
+    });
+
+    uploadPdfButton.addEventListener('click', () => {
+      fileInput.click();
+    });
+
+    fileInput.addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      if (file) {
+        const fileURL = URL.createObjectURL(file);
+        const pdfWrapper = document.createElement('div');
+        pdfWrapper.className = 'pdf-wrapper';
+        pdfWrapper.style.width = '300px';
+        pdfWrapper.style.height = '400px';
+        pdfWrapper.style.top = (viewport.scrollTop + 100) + 'px';
+        pdfWrapper.style.left = (viewport.scrollLeft + 100) + 'px';
+        const iframe = document.createElement('iframe');
+        iframe.src = fileURL;
+        pdfWrapper.appendChild(iframe);
+        canvas.appendChild(pdfWrapper);
+        makeDraggable(pdfWrapper);
+      }
+    });
+
+    function makeDraggable(element) {
+      let isDragging = false;
+      let offsetX, offsetY;
+      element.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        offsetX = e.clientX - element.offsetLeft;
+        offsetY = e.clientY - element.offsetTop;
+        element.style.cursor = 'grabbing';
+        element.style.zIndex = 1000;
+      });
+      document.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        element.style.left = (e.clientX - offsetX) + 'px';
+        element.style.top  = (e.clientY - offsetY) + 'px';
+      });
+      document.addEventListener('mouseup', () => {
+        if (isDragging) {
+          isDragging = false;
+          element.style.cursor = 'move';
+          element.style.zIndex = '';
+        }
+      });
+    }
+
+    /*****************************************
+     * DRAWING + ZOOM
+     ****************************************/
+    zoomInButton.addEventListener('click', () => {
+      zoomLevel += 0.1;
+      canvas.style.transform = `scale(${zoomLevel})`;
+    });
+    zoomOutButton.addEventListener('click', () => {
+      zoomLevel = Math.max(zoomLevel - 0.1, 0.1);
+      canvas.style.transform = `scale(${zoomLevel})`;
+    });
+    drawButton.addEventListener('click', () => {
+      isDrawing = !isDrawing;
+      drawButton.style.backgroundColor = isDrawing ? '#28a745' : '#D8E2F1';
+    });
+    drawingCanvas.addEventListener('mousedown', (e) => {
+      if (!isDrawing) return;
+      drawingContext.beginPath();
+      drawingContext.moveTo(e.offsetX, e.offsetY);
+      drawingCanvas.addEventListener('mousemove', draw);
+    });
+    drawingCanvas.addEventListener('mouseup', () => {
+      if (isDrawing) {
+        drawingCanvas.removeEventListener('mousemove', draw);
+      }
+    });
+    function draw(e) {
+      drawingContext.lineTo(e.offsetX, e.offsetY);
+      drawingContext.strokeStyle = 'black';
+      drawingContext.lineWidth = 2;
+      drawingContext.stroke();
+    }
+
+    /*****************************************
+     * SAVE/RESTORE + CLEAR
+     ****************************************/
+    function saveCanvasState() {
+      const canvasData = drawingCanvas.toDataURL();
+      localStorage.setItem('canvasState', canvasData);
+      const stickyNotes = [...canvas.querySelectorAll('.sticky-note')].map(note => ({
+        content: note.value,
+        top: note.style.top,
+        left: note.style.left,
+        backgroundColor: note.style.backgroundColor
+      }));
+      localStorage.setItem('stickyNotes', JSON.stringify(stickyNotes));
+      const qaBlocks = [...canvas.querySelectorAll('.qa-block')].map(block => ({
+        content: block.textContent,
+        top: block.style.top,
+        left: block.style.left,
+        isNote: block.classList.contains('note')
+      }));
+      localStorage.setItem('qaBlocks', JSON.stringify(qaBlocks));
+      const pdfWrappers = [...canvas.querySelectorAll('.pdf-wrapper')].map(wrapper => ({
+        src: wrapper.querySelector('iframe').src,
+        top: wrapper.style.top,
+        left: wrapper.style.left,
+        width: wrapper.style.width,
+        height: wrapper.style.height
+      }));
+      localStorage.setItem('pdfWrappers', JSON.stringify(pdfWrappers));
+    }
+    clearButton.addEventListener('click', () => {
+      drawingContext.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+      document.querySelectorAll('.sticky-note, .qa-block, .pdf-wrapper, .sticky-group, .generated-box').forEach(el => el.remove());
+      localStorage.removeItem('canvasState');
+      localStorage.removeItem('stickyNotes');
+      localStorage.removeItem('qaBlocks');
+      localStorage.removeItem('pdfWrappers');
+    });
+    startArticleButton.addEventListener('click', () => {
+      saveCanvasState();
+      window.location.href = 'edit-article.html';
+    });
+    function restoreCanvasState() {
+      const canvasData = localStorage.getItem('canvasState');
+      if (canvasData) {
+        const img = new Image();
+        img.src = canvasData;
+        img.onload = () => drawingContext.drawImage(img, 0, 0);
+      }
+      const stickyNotes = JSON.parse(localStorage.getItem('stickyNotes') || '[]');
+      stickyNotes.forEach(noteData => {
+        const stickyNote = document.createElement('textarea');
+        stickyNote.className = 'sticky-note';
+        stickyNote.value = noteData.content;
+        stickyNote.style.top = noteData.top;
+        stickyNote.style.left = noteData.left;
+        stickyNote.style.backgroundColor = noteData.backgroundColor;
+        canvas.appendChild(stickyNote);
+        makeGroupable(stickyNote);
+      });
+      const qaBlocks = JSON.parse(localStorage.getItem('qaBlocks') || '[]');
+      qaBlocks.forEach(blockData => {
+        const qaBlock = document.createElement('div');
+        qaBlock.className = 'qa-block';
+        if (blockData.isNote) qaBlock.classList.add('note');
+        qaBlock.textContent = blockData.content;
+        qaBlock.style.position = 'absolute';
+        qaBlock.style.top = blockData.top;
+        qaBlock.style.left = blockData.left;
+        const deleteButton = document.createElement('button');
+        deleteButton.className = 'delete-button';
+        deleteButton.textContent = '×';
+        deleteButton.addEventListener('click', (e) => {
+          e.stopPropagation();
+          qaBlock.remove();
+        });
+        qaBlock.appendChild(deleteButton);
+        canvas.appendChild(qaBlock);
+        makeGroupable(qaBlock);
+      });
+      const pdfWrappers = JSON.parse(localStorage.getItem('pdfWrappers') || '[]');
+      pdfWrappers.forEach(wrapperData => {
+        const pdfWrapper = document.createElement('div');
+        pdfWrapper.className = 'pdf-wrapper';
+        pdfWrapper.style.position = 'absolute';
+        pdfWrapper.style.top = wrapperData.top;
+        pdfWrapper.style.left = wrapperData.left;
+        pdfWrapper.style.width = wrapperData.width;
+        pdfWrapper.style.height = wrapperData.height;
+        const iframe = document.createElement('iframe');
+        iframe.src = wrapperData.src;
+        pdfWrapper.appendChild(iframe);
+        canvas.appendChild(pdfWrapper);
+        makeDraggable(pdfWrapper);
+      });
+    }
+    document.addEventListener('DOMContentLoaded', restoreCanvasState);
+  </script>
+</body>
+</html>
