@@ -1052,8 +1052,13 @@
                         voiceName = 'en-US-Neural2-J';  // Change the voice during reflection mode
                     } else {
                         console.log(personality);
-                        // userQuestion = `I am going to give details about a personality that I want yo u to model. I would like you to respond to questions that a high-school journalism student will be asking you for a school newspaper article. I want your answers to be BRIEF and ARTICULATE and addressed to the student. Feel free to expand on the attributes and experience of your role and maybe provide personal anecdotes that back them up but ONLY IF THE QUESTION ASKS. Here is an article that interviews the person you will be modeling for context: \n\n ${articleText}. You will be acting as ${intervieweeInfo}. Here is the conversation you have already had: "${full_transcript}" The high school journalist will give unique questions, try your best to model the thoughts of ${intervieweeInfo}. Talk only like the interviewee you are modeling. Feel free to speculate on their experiences if asked questions you do not have info on. Here is the question: ${userQuery}. Only answer this question, do not write behaviors of the interviewee. Your answer should be no more than 5000 characters. `;
                         console.log(full_transcript);
+                        // Check if there has been previous questions with the user
+                        // Check if the user asked a question that is respectful even with the bad personality
+                        // Give the user a score based on their question from 0-2 (2 meaning they did well)
+                        // if it is 2 do not use personality anymore
+                        // if it is 1 use personality but a more subtle version
+                        // if it is 0 keep the personality bad
                         userQuestion = "You are " + intervieweeName + ". \nHere is an some info on them: \n" + intervieweeSummary + ". \nAct like this person under whatever circumstances. \n You are currently an interviewee in an interview conducted by a high school journalist. You start off " + personality + " but become better as the conversation progresses and the interviewer builds trust with you. Adapt your responses based on the conversation history here: " + full_transcript + ". Reply to the journalist question/comment like " + intervieweeInfo + " (you may create fake details if necessary) when needed. Your answers shouldn't be longer than three paragraphs! \nHere is what the journalist says: " + userQuery;
                     }
 
@@ -1082,7 +1087,6 @@
                         transcript += (`\nQ: ${userQuery}`);
                         full_transcript.push(`A: ${trimmedResponse}`);
                         transcript += (`\nA: ${trimmedResponse}`);
-                        
                     }
 
 
@@ -1507,101 +1511,7 @@ On the last line, write the average of the two scores as a single number (e.g., 
 
 Here is the REAL transcript that you MUST grade: ` + full_transcript;
 
-                    //                    const interviewScoringPrompt = `Please evaluate the following interview transcript based on two measures: Interviewee's Response Quality and Interviewer's Respectfulness. For each measure, provide a score from 1-10 and a brief justification. Use the following rubric:
-
-                    // Interviewee's Response Quality
-
-                    // 1/10 - Extremely Poor:
-                    // Interviewee: "I don't know. Whatever."
-
-                    // 2/10 - Very Poor:
-                    // Interviewee: "It's complicated. You wouldn't understand."
-
-                    // 3/10 - Poor:
-                    // Interviewee: "We make things. They're good. People buy them."
-
-                    // 4/10 - Below Average:
-                    // Interviewee: "Our product helps businesses. It saves time and money. That's about it."
-
-                    // 5/10 - Average:
-                    // Interviewee: "Our software improves efficiency in manufacturing. It automates some processes and reduces errors. Most of our clients see cost savings."
-
-                    // 6/10 - Above Average:
-                    // Interviewee: "Our AI-driven software optimizes manufacturing processes. It identifies inefficiencies, automates routine tasks, and provides real-time analytics. On average, our clients report a 15% increase in productivity and a 10% reduction in costs."
-
-                    // 7/10 - Good:
-                    // Interviewee: "Our AI-driven software revolutionizes manufacturing efficiency. By analyzing vast amounts of data, it identifies bottlenecks, automates routine tasks, and provides predictive maintenance schedules. Clients typically see a 15-20% increase in productivity, 10-15% reduction in costs, and a 30% decrease in unplanned downtime. For example, one of our clients in the automotive industry..."
-
-                    // 8/10 - Very Good:
-                    // Interviewee: "Our AI-driven software is transforming manufacturing efficiency. It uses advanced machine learning algorithms to analyze real-time and historical data, identifying inefficiencies that humans might miss. It automates routine tasks, provides predictive maintenance schedules, and even suggests process improvements.
-
-                    // On average, our clients report a 15-20% increase in productivity, 10-15% reduction in costs, and a 30% decrease in unplanned downtime. For instance, one of our clients in the automotive industry reduced their production cycle time by 22% within three months of implementation.
-
-                    // Moreover, our software adapts to each unique manufacturing environment. It considers factors like equipment age, worker expertise, and supply chain dynamics to provide tailored solutions. This adaptability ensures that companies of all sizes and sectors can benefit from our technology.
-
-                    // We're also focusing on sustainability. Our latest update includes features that optimize energy usage and minimize waste, helping our clients reduce their carbon footprint while improving their bottom line."
-
-                    // 9/10 - Excellent:
-                    // Interviewee: [Builds on the 8/10 response, adding:]
-                    // "Looking ahead, we're exploring the integration of quantum computing to further enhance our predictive capabilities. This could potentially revolutionize how we approach complex supply chain optimizations and materials science in manufacturing.
-
-                    // We're also keenly aware of the ethical implications of AI in the workplace. We've established an ethics board to ensure our technology augments human workers rather than replaces them. Part of our implementation process involves working closely with labor representatives to ensure a smooth transition and to identify opportunities for worker upskilling.
-
-                    // Lastly, we're investing heavily in making our software more accessible to small and medium-sized enterprises. We believe that democratizing access to advanced AI tools is crucial for fostering innovation and maintaining competitive markets in the manufacturing sector."
-
-                    // 10/10 - Exceptional:
-                    // Interviewee: [Encompasses all elements of 9/10, then adds:]
-                    // "To give you a broader perspective, let me contextualize our work within the current global manufacturing landscape. The fourth industrial revolution, or Industry 4.0, is reshaping manufacturing worldwide. Our AI solution is at the forefront of this transformation, but it's just one piece of a larger puzzle.
-
-                    // We're seeing a convergence of technologies - AI, IoT, 5G, robotics, and additive manufacturing - all coming together to create smart factories. Our software serves as a central nervous system for these smart factories, integrating data from various sources to create a holistic view of the entire production ecosystem.
-
-                    // However, technology alone isn't enough. We're actively involved in shaping policy discussions around data privacy, AI governance, and workforce development. We regularly contribute to international standards bodies and participate in public-private partnerships aimed at ensuring the benefits of these technologies are broadly shared.
-
-                    // Furthermore, we're exploring how our technology can address global challenges. For instance, we're partnering with NGOs to adapt our software for use in disaster relief supply chains, and we're working with agricultural tech companies to optimize food production and reduce global hunger.
-
-                    // In essence, we're not just selling a product; we're driving a paradigm shift in how we approach manufacturing, sustainability, and global cooperation in the age of AI."
-
-                    // Interviewer's Respectfulness
-
-                    // 1/10 - Extremely Poor:
-                    // Interviewer: "Hurry up and answer. I don't have all day for your nonsense."
-
-                    // 2/10 - Very Poor:
-                    // Interviewer: "That's a stupid idea. Who would ever use that?"
-
-                    // 3/10 - Poor:
-                    // Interviewer: "Yeah, yeah, just get to the point already. Is this thing making money or not?"
-
-                    // 4/10 - Below Average:
-                    // Interviewer: "Okay, so what's next? And try to keep it brief this time."
-
-                    // 5/10 - Average:
-                    // Interviewer: "That's interesting. Now, tell me about your revenue model."
-
-                    // 6/10 - Above Average:
-                    // Interviewer: "Thank you for that explanation. Could you please tell me more about your revenue model?"
-
-                    // 7/10 - Good:
-                    // Interviewer: "Thank you for that insightful explanation. If you don't mind, I'd like to ask about your revenue model. Could you please share some details on that?"
-
-                    // 8/10 - Very Good:
-                    // Interviewer: "Thank you so much for that insightful explanation, Dr. Johnson. You've given us a lot to think about. If you're comfortable, I'd love to learn more about your revenue model. Could you please share some details on that? Of course, if there are any aspects you can't discuss, I completely understand."
-
-                    // 9/10 - Excellent:
-                    // Interviewer: "Dr. Johnson, I want to express my sincere gratitude for the comprehensive overview you've provided. Your insights into AI-driven manufacturing efficiency are truly fascinating. If you're willing, I'd be very interested in learning about your revenue model. However, please feel free to share only what you're comfortable discussing. Your expertise and time are greatly appreciated, and I want to ensure we respect any confidentiality constraints you may have."
-
-                    // 10/10 - Exceptional:
-                    // Interviewer: "Dr. Johnson, I can't thank you enough for the extraordinary insights you've shared with us today. Your explanation of how AI is transforming manufacturing efficiency was not only comprehensive but also incredibly clear and thought-provoking. You've given our audience a lot to consider about the future of industry.
-
-                    // Before we move on, I want to ensure you have the opportunity to add anything you feel is important that we haven't covered. Is there any aspect of your work or its implications that you'd like to elaborate on?
-
-                    // If you're comfortable, I'd be very interested in learning about your revenue model, as it relates to making this groundbreaking technology accessible to different scales of manufacturing. However, please only share what you're at liberty to discuss. I fully respect any confidentiality requirements you may have.
-
-                    // Lastly, I want to express my sincere appreciation for your time and expertise. Your work is clearly pushing the boundaries of what's possible in manufacturing, and it's been a privilege to discuss it with you. Thank you for helping our audience understand these complex issues."
-
-                    // On the last line write the average score of the two scores as just one number (eg. 3.5 or 7). Here is the transcript: ` + full_transcript;
-                    //    
-                    console.log(interviewScoringPrompt);               
+                    console.log(interviewScoringPrompt);
                     const personality_score_response = await callOpenAI(interviewScoringPrompt);
                     //callClaude("Can you rate this interview from  1-10 based on these 2 measures. #1. How understandable and insightful the responses from the interviewee is. Feel free to use any definition of what you think is understandable or insightful. If you think the responses are good enough to create an article than that means it is good. #2. How respectful and kind the interviewer is based on their words only (if they say please/thank you and seem respectful of the interviewees time versus rude or annoyed words in their languge). Here is the transcript of the interview: " + full_transcript + "\n In the last line of your response write the average of both the scores. ONLY THE NUMBER SHOULD BE THERE.");
 
