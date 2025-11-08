@@ -300,10 +300,15 @@ import { callOpenAI } from './openai-api.js';
     iconContainer.classList.add('icon-container');
 
     const followUpButton = createButton('Follow Up', 'follow-up-button', 'Follow up');
+    followUpButton.classList.add('interview-button');
     const commentButton = createIcon(IMAGES.comment, 'Add Comment', 'Note');
+    commentButton.classList.add('interview-button');
     const pauseBut = createIcon(IMAGES.pause, 'Pause', 'Pause');
+    pauseBut.classList.add('interview-button');
     const redoButton = createIcon(IMAGES.redo, 'Redo', 'Redo');
+    redoButton.classList.add('interview-button');
     const trashButton = createIcon(IMAGES.trash, 'Delete', 'Delete');
+    trashButton.classList.add('interview-button');
 
     iconContainer.appendChild(followUpButton);
     iconContainer.appendChild(commentButton);
@@ -717,7 +722,8 @@ import { callOpenAI } from './openai-api.js';
     try {
       state.inReflectionMode = true;
       showBottomBarElements();
-      // Reflection will create its own Done button in the UI (not the brainstorm Done)
+
+      disableInterviewButtons();
 
       const feedback = await feedbackType(state.fullTranscript);
       const personalityScore = await evaluateInterview();
@@ -850,6 +856,49 @@ Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
     if (rDone) rDone.remove();
     elements.brainstormTextarea.classList.remove('expanded');
     hideBottomBarElements();
+
+    // Re-enable interview buttons now that reflection is finished
+    enableInterviewButtons();
+  }
+
+  /**
+   * Disable all buttons used in Q&A blocks (marked with .interview-button)
+   */
+  function disableInterviewButtons() {
+    const buttons = qsa('.interview-button');
+    buttons.forEach(b => {
+      try {
+        if ('disabled' in b) {
+          b.disabled = true;
+        } else {
+          b.style.pointerEvents = 'none';
+          b.style.opacity = '0.5';
+          b.setAttribute('aria-disabled', 'true');
+        }
+      } catch (e) {
+        // ignore
+      }
+    });
+  }
+
+  /**
+   * Re-enable all buttons used in Q&A blocks
+   */
+  function enableInterviewButtons() {
+    const buttons = qsa('.interview-button');
+    buttons.forEach(b => {
+      try {
+        if ('disabled' in b) {
+          b.disabled = false;
+        } else {
+          b.style.pointerEvents = '';
+          b.style.opacity = '';
+          b.removeAttribute('aria-disabled');
+        }
+      } catch (e) {
+        // ignore
+      }
+    });
   }
 
   /**
