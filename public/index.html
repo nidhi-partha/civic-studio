@@ -69,7 +69,6 @@
   <textarea id="article-input" placeholder="Paste your article here..."></textarea>
   <button id="next-btn">Next</button>
 
-  <!-- Single module script; no inline code on a script with src -->
   <script type="module">
     import { callClaude } from './claude-api.js';
     import { callOpenAI } from './openai-api.js';
@@ -89,10 +88,8 @@ name:description`;
     }
 
     function normalizeLLMResponse(resp) {
-      // Support either a raw string or an object like { text: "..."}.
       if (typeof resp === 'string') return resp;
       if (resp && typeof resp.text === 'string') return resp.text;
-      // Some SDKs return { content: [{ type:"text", text:"..." }]}
       const firstText = resp?.content?.find?.(c => typeof c?.text === 'string')?.text;
       return typeof firstText === 'string' ? firstText : '';
     }

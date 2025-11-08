@@ -51,7 +51,7 @@
                 <h1>Brainstorm</h1>
                 <p>Ask for help with the mic button!</p>
                 <textarea class="brainstorm-textarea"
-                    placeholder="Write/Brainstorm questions for the interviewer here"></textarea>
+                    placeholder="Write/Brainstorm questions for the interviewer here. End each question with a '?'."></textarea>
 
                 <div id="brainstormQAContainer"></div>
                 <button class="done-button" id="doneButton">Done</button>
@@ -59,11 +59,16 @@
 
                 <div class="interview-content" id="interviewContent">
                     <h1>Interview</h1>
-                    <div class="sub-headers">
-                        <h2>Round 1</h2>
-                        <h3>Version 1</h3>
-                    </div>
                     <div id="qaContainer"></div>
+                </div>
+
+                <div id="reflectionContainer" class="reflection-container" style="display:none; margin-top:20px;">
+                    <h1>Reflection</h1>
+                    <div id="reflectionBlockSection"></div>
+                    <div class="reflection-prompt" style="margin-top:12px;">
+                        <p id="reflectionMicText">Click on the mic button to ask for more feedback.</p>
+                    </div>
+                    <button class="done-button" id="reflectionDoneButton" style="margin-top:12px;">Done</button>
                 </div>
 
 

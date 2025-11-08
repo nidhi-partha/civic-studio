@@ -31,7 +31,7 @@ import { callOpenAI } from './openai-api.js';
     pausedTime: 0,
     intervieweeSummary: "",
     voiceName: 'en-US-Neural2-D',
-    modules: ["Question Quality", "Power Dynamics", "Ethics and Privacy", "Cultural Knowledge", "Fact Checking"],
+    modules: ["Cognitive Engagement", "Question Quality", "Power Dynamics", "Ethics and Privacy", "Cultural Knowledge", "Fact Checking"],
     moduleFunctions: null
   };
 
@@ -104,6 +104,7 @@ import { callOpenAI } from './openai-api.js';
    */
   function initializeModuleFunctions() {
     state.moduleFunctions = [
+      cognitiveEngagement,
       questionQuality,
       powerDynamics,
       ethicsAndPrivacy,
@@ -412,23 +413,68 @@ import { callOpenAI } from './openai-api.js';
    * Handles pause/play toggle for audio
    */
   async function handlePausePlay(pauseBut, answerElement) {
-    let isPlaying = pauseBut.src.includes('pause');
+    // Maintain audio state per button so each block plays its own text
+    try {
+      // Ignore clicks while loading/synthesizing to avoid races
+      if (pauseBut.dataset.loading === 'true') return;
 
-    if (isPlaying) {
-      if (state.audio) {
-        state.pausedTime = state.audio.currentTime;
-        state.audio.pause();
+      const isPlaying = pauseBut.dataset.playing === 'true';
+
+      if (isPlaying) {
+        if (pauseBut._audio) {
+          pauseBut._pausedTime = pauseBut._audio.currentTime || 0;
+          pauseBut._audio.pause();
+        }
+        pauseBut.src = IMAGES.play;
+        pauseBut.dataset.playing = 'false';
+        return;
       }
+
+      // Get the text for this block (strip leading 'A:' if present)
+      const responseText = (answerElement && answerElement.innerText) ? answerElement.innerText.replace(/^A:\s*/i, '').trim() : '';
+      if (!responseText) return;
+
+      // Prevent extra clicks while we synthesize/load audio
+      pauseBut.dataset.loading = 'true';
+      pauseBut.src = IMAGES.pause; // immediate visual feedback
+
+      // If we already synthesized audio for a different text, recreate
+      if (!pauseBut._audio || pauseBut._audioText !== responseText) {
+        try {
+          const audioContent = await synthesizeSpeech(responseText, state.voiceName);
+          pauseBut._audioText = responseText;
+          pauseBut._audio = new Audio(`data:audio/mp3;base64,${audioContent}`);
+        } catch (err) {
+          console.error('Error synthesizing audio for block:', err);
+          pauseBut.dataset.loading = 'false';
+          pauseBut.src = IMAGES.play;
+          return;
+        }
+      }
+
+      pauseBut._audio.currentTime = pauseBut._pausedTime || 0;
+      // Play and clear loading flag once playback starts (or on error)
+      pauseBut._audio.play().then(() => {
+        pauseBut.dataset.playing = 'true';
+        pauseBut.dataset.loading = 'false';
+      }).catch(err => {
+        console.error('Error playing per-block audio:', err);
+        pauseBut.dataset.playing = 'false';
+        pauseBut.dataset.loading = 'false';
+        pauseBut.src = IMAGES.play;
+      });
+
+      // When this block's audio ends, update UI state
+      pauseBut._audio.onended = function () {
+        pauseBut.dataset.playing = 'false';
+        pauseBut.src = IMAGES.play;
+        pauseBut._pausedTime = 0;
+        pauseBut.dataset.loading = 'false';
+      };
+    } catch (e) {
+      console.error('handlePausePlay error', e);
+      pauseBut.dataset.loading = 'false';
       pauseBut.src = IMAGES.play;
-    } else {
-      if (!state.audio) {
-        const responseText = answerElement.innerText.slice(3);
-        const audioContent = await synthesizeSpeech(responseText, state.voiceName);
-        state.audio = new Audio(`data:audio/mp3;base64,${audioContent}`);
-      }
-      state.audio.currentTime = state.pausedTime;
-      state.audio.play();
-      pauseBut.src = IMAGES.pause;
     }
   }
 
@@ -453,6 +499,26 @@ import { callOpenAI } from './openai-api.js';
    * Handles deletion of Q&A block
    */
   function handleTrash(qaBlock, iconContainer, additionalQuestionsDiv) {
+    // Stop and clean up any per-block audio attached to icons inside this container
+    try {
+      const pauseIcons = iconContainer.querySelectorAll('img');
+      pauseIcons.forEach(img => {
+        try {
+          if (img._audio) {
+            img._audio.pause();
+            img._audio = null;
+            img._audioText = null;
+            img.dataset.playing = 'false';
+            img.dataset.loading = 'false';
+            img.src = IMAGES.play;
+          } else {
+            // ensure loading flag cleared even if no _audio
+            img.dataset.loading = 'false';
+          }
+        } catch (e) { }
+      });
+    } catch (e) { }
+
     qaBlock.remove();
     iconContainer.remove();
     additionalQuestionsDiv.remove();
@@ -492,8 +558,68 @@ import { callOpenAI } from './openai-api.js';
       // This allows the text to show immediately while audio loads in background
       synthesizeSpeech(trimmedResponse, voiceName)
         .then(audioContent => {
-          state.audio = new Audio(`data:audio/mp3;base64,${audioContent}`);
-          state.audio.play();
+          // Create Audio object for this response
+          const audioObj = new Audio(`data:audio/mp3;base64,${audioContent}`);
+
+          // Try to attach the audio to the pause button for this block so pause controls this audio
+          let attachedToPause = false;
+          let pauseBut = null;
+          try {
+            const iconContainer = answerElement.parentElement ? answerElement.parentElement.nextElementSibling : null;
+            if (iconContainer) {
+              pauseBut = iconContainer.querySelector('img[alt="Pause"]');
+              if (pauseBut) {
+                pauseBut._audio = audioObj;
+                pauseBut._audioText = trimmedResponse;
+                pauseBut._pausedTime = 0;
+                // mark as loading until playback starts
+                pauseBut.dataset.loading = 'true';
+                pauseBut.src = IMAGES.pause;
+                attachedToPause = true;
+              }
+            }
+          } catch (e) {
+            console.warn('Could not attach audio to pause button:', e);
+          }
+
+          // If we did not attach to a block pause button, fall back to global state.audio
+          if (!attachedToPause) {
+            state.audio = audioObj;
+          }
+
+          // Play the audio (either attached object or global/state audio)
+          audioObj.play().then(() => {
+            if (attachedToPause && pauseBut) {
+              pauseBut.dataset.playing = 'true';
+              pauseBut.dataset.loading = 'false';
+            } else {
+              state.audio = audioObj;
+            }
+          }).catch(err => {
+            console.error('Error playing audio object:', err);
+            if (attachedToPause && pauseBut) {
+              pauseBut.dataset.playing = 'false';
+              pauseBut.dataset.loading = 'false';
+              pauseBut.src = IMAGES.play;
+            }
+          });
+
+          // Ensure UI updates when audio ends
+          audioObj.onended = function () {
+            try {
+              if (attachedToPause && pauseBut) {
+                pauseBut.dataset.playing = 'false';
+                pauseBut.src = IMAGES.play;
+                pauseBut._pausedTime = 0;
+              } else {
+                state.pausedTime = 0;
+                // if global audio ended, clear state.audio reference
+                if (state.audio === audioObj) state.audio = null;
+              }
+            } catch (e) {
+              console.error('Error in audio onended handler:', e);
+            }
+          };
         })
         .catch(error => {
           console.error('Error playing audio:', error);
@@ -693,9 +819,11 @@ import { callOpenAI } from './openai-api.js';
         if (state.inBrainstormMode) {
           addQAtoNewContainer(userQuery, elements.brainstormQAContainer);
         } else if (state.inReflectionMode) {
-          addQAtoNewContainer(userQuery, elements.qaContainer);
+          const reflectionSection = id('reflectionBlockSection') || elements.qaContainer;
+          addQAtoNewContainer(userQuery, reflectionSection);
+        } else {
+          await processResponse(userQuery);
         }
-        await processResponse(userQuery);
       }
     } catch (error) {
       console.error('Error during mic button click:', error);
@@ -712,7 +840,9 @@ import { callOpenAI } from './openai-api.js';
       return;
     }
     elements.intervieweeAvatar.src = IMAGES.teacher;
-    addReflectionAndRedoPrompt(cognitiveEngagement);
+    // Start reflection with general feedback; module-specific feedback (like cognitiveEngagement)
+    // will be available as buttons under the general feedback.
+    addReflectionAndRedoPrompt();
   }
 
   /**
@@ -725,7 +855,14 @@ import { callOpenAI } from './openai-api.js';
 
       disableInterviewButtons();
 
-      const feedback = await feedbackType(state.fullTranscript);
+      // If a specific feedbackType (module) was provided, use it. Otherwise use the
+      // general feedback module to give an overview first.
+      let feedback;
+      if (typeof feedbackType === 'function') {
+        feedback = await feedbackType(state.fullTranscript);
+      } else {
+        feedback = await generalFeedback(state.fullTranscript);
+      }
       const personalityScore = await evaluateInterview();
 
       if (personalityScore >= 7) {
@@ -739,7 +876,40 @@ import { callOpenAI } from './openai-api.js';
         state.audio.play();
       }
 
-      displayReflectionUI(feedback);
+      const newReflectionPause = displayReflectionUI(feedback);
+
+      try {
+        if (state.audio) {
+          let reflectionPause = newReflectionPause || null;
+          if (!reflectionPause) {
+            const reflectionContainer = id('reflectionContainer');
+            if (reflectionContainer) reflectionPause = reflectionContainer.querySelector('img[alt="Pause"]');
+          }
+
+          if (!reflectionPause) {
+            reflectionPause = elements.qaContainer.querySelector('.reflection-header img[alt="Pause"]');
+          }
+
+          if (reflectionPause) {
+            reflectionPause._audio = state.audio;
+            reflectionPause._audioText = feedback;
+            reflectionPause._pausedTime = 0;
+            reflectionPause.dataset.playing = 'true';
+            reflectionPause.src = IMAGES.pause;
+
+            // ensure the element updates when the audio ends
+            state.audio.onended = function () {
+              reflectionPause.dataset.playing = 'false';
+              reflectionPause.src = IMAGES.play;
+              reflectionPause._pausedTime = 0;
+              // clear global audio reference
+              state.audio = null;
+            };
+          }
+        }
+      } catch (e) {
+        console.warn('Could not attach reflection audio to pause icon:', e);
+      }
     } catch (error) {
       console.error('Error getting feedback:', error);
     }
@@ -801,6 +971,33 @@ Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
    * Displays reflection UI with feedback
    */
   function displayReflectionUI(feedback) {
+    const reflectionContainer = id('reflectionContainer');
+    const reflectionSection = id('reflectionBlockSection');
+
+    if (reflectionContainer && reflectionSection) {
+      const feedbackBlock = createFeedbackBlock(feedback);
+      const iconContainer = createReflectionIconContainer(feedback);
+      const buttonContainer = createModuleButtonContainer();
+
+      const blockDiv = document.createElement('div');
+      blockDiv.classList.add('reflection-block');
+      blockDiv.appendChild(feedbackBlock);
+      blockDiv.appendChild(iconContainer);
+      blockDiv.appendChild(buttonContainer);
+
+      reflectionSection.appendChild(blockDiv);
+
+      reflectionContainer.style.display = 'block';
+
+      const reflectionDoneButton = id('reflectionDoneButton');
+      if (reflectionDoneButton) {
+        reflectionDoneButton.onclick = finishReflection;
+      }
+
+      const pauseIcon = blockDiv.querySelector('img[alt="Pause"]');
+      return pauseIcon || null;
+    }
+
     const reflectionHeaderDiv = document.createElement('div');
     reflectionHeaderDiv.classList.add('reflection-header');
     reflectionHeaderDiv.style.marginTop = '20px';
@@ -815,10 +1012,12 @@ Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
     const iconContainer = createReflectionIconContainer(feedback);
     const buttonContainer = createModuleButtonContainer();
 
-    reflectionHeaderDiv.appendChild(reflectionHeader);
-    reflectionHeaderDiv.appendChild(feedbackBlock);
-    reflectionHeaderDiv.appendChild(iconContainer);
-    reflectionHeaderDiv.appendChild(buttonContainer);
+  const pauseIcon = iconContainer.querySelector('img[alt="Pause"]');
+
+  reflectionHeaderDiv.appendChild(reflectionHeader);
+  reflectionHeaderDiv.appendChild(feedbackBlock);
+  reflectionHeaderDiv.appendChild(iconContainer);
+  reflectionHeaderDiv.appendChild(buttonContainer);
 
     const reflectionPromptDiv = document.createElement('div');
     reflectionPromptDiv.classList.add('reflection-prompt');
@@ -841,6 +1040,7 @@ Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
     reflectionDoneButton.addEventListener('click', finishReflection);
 
     elements.qaContainer.appendChild(reflectionDoneButton);
+    return pauseIcon || null;
   }
 
   /**
@@ -852,12 +1052,18 @@ Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
     state.inBrainstormMode = false;
 
     elements.interviewContent.style.display = 'block';
-    const rDone = id('reflectionDoneButton');
-    if (rDone) rDone.remove();
+    const reflectionContainer = id('reflectionContainer');
+    if (reflectionContainer) {
+=      reflectionContainer.style.display = 'none';
+      const section = id('reflectionBlockSection');
+      if (section) section.innerHTML = '';
+    } else {
+      const rDone = id('reflectionDoneButton');
+      if (rDone) rDone.remove();
+    }
     elements.brainstormTextarea.classList.remove('expanded');
     hideBottomBarElements();
 
-    // Re-enable interview buttons now that reflection is finished
     enableInterviewButtons();
   }
 
@@ -972,22 +1178,60 @@ Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
    * Handles pause/play in reflection mode
    */
   async function handleReflectionPausePlay(pauseBut, feedback) {
-    let isPlaying = pauseBut.src.includes('pause');
+    try {
+      if (pauseBut.dataset.loading === 'true') return;
 
-    if (isPlaying) {
-      if (state.audio) {
-        state.pausedTime = state.audio.currentTime;
-        state.audio.pause();
+      const isPlaying = pauseBut.dataset.playing === 'true';
+      if (isPlaying) {
+        if (pauseBut._audio) {
+          pauseBut._pausedTime = pauseBut._audio.currentTime || 0;
+          pauseBut._audio.pause();
+        }
+        pauseBut.src = IMAGES.play;
+        pauseBut.dataset.playing = 'false';
+        return;
       }
+
+      if (!feedback) return;
+
+      // Prevent extra clicks while we synthesize/load audio
+      pauseBut.dataset.loading = 'true';
+      pauseBut.src = IMAGES.pause; // immediate visual feedback
+
+      if (!pauseBut._audio || pauseBut._audioText !== feedback) {
+        try {
+          const audioContent = await synthesizeSpeech(feedback, state.voiceName);
+          pauseBut._audioText = feedback;
+          pauseBut._audio = new Audio(`data:audio/mp3;base64,${audioContent}`);
+        } catch (err) {
+          console.error('Error synthesizing reflection audio:', err);
+          pauseBut.dataset.loading = 'false';
+          pauseBut.src = IMAGES.play;
+          return;
+        }
+      }
+
+      pauseBut._audio.currentTime = pauseBut._pausedTime || 0;
+      pauseBut._audio.play().then(() => {
+        pauseBut.dataset.playing = 'true';
+        pauseBut.dataset.loading = 'false';
+      }).catch(err => {
+        console.error('Error playing reflection audio:', err);
+        pauseBut.dataset.playing = 'false';
+        pauseBut.dataset.loading = 'false';
+        pauseBut.src = IMAGES.play;
+      });
+
+      pauseBut._audio.onended = function () {
+        pauseBut.dataset.playing = 'false';
+        pauseBut.src = IMAGES.play;
+        pauseBut._pausedTime = 0;
+        pauseBut.dataset.loading = 'false';
+      };
+    } catch (e) {
+      console.error('handleReflectionPausePlay error', e);
+      pauseBut.dataset.loading = 'false';
       pauseBut.src = IMAGES.play;
-    } else {
-      if (!state.audio) {
-        const audioContent = await synthesizeSpeech(feedback, state.voiceName);
-        state.audio = new Audio(`data:audio/mp3;base64,${audioContent}`);
-      }
-      state.audio.currentTime = state.pausedTime;
-      state.audio.play();
-      pauseBut.src = IMAGES.pause;
     }
   }
 
@@ -1027,6 +1271,18 @@ Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
 Examples: 'You mentioned there were significant challenges in the project. Can you explain what you mean by significant challenges?' 'What did you mean when you said the team was 'innovative'?' 'You talked about a major setback last year. Can you tell me more about that?'
 Here is a transcript of an interview: ${transcriptContent}
 Based on this transcript and the information about cognitive engagement provide feedback on the interviewers cognitive engagement. Your feedback should be specific to the transcript and you should be speaking to the interviewer.`;
+
+    return await callClaude(prompt);
+  }
+
+  /**
+   * General feedback module: returns a broad overview of the interviewer's performance
+   * This is called automatically when entering reflection; module buttons provide
+   * more specific feedback on demand.
+   */
+  async function generalFeedback(transcriptContent) {
+    const prompt = "You are an expert journalist. A student has just done part of their first interview with an interviewee. Give them feedback on their interview. Talk about their strengths and then some weaknesses with specific examples from the transcript." +
+      `\n\nTranscript:\n${transcriptContent}`;
 
     return await callClaude(prompt);
   }
@@ -1178,21 +1434,35 @@ Based on this transcript and the information about ethics and privacy provide fe
    */
   function displayQuestionTips() {
     const questionTipsText = `
-      <h2>Question Tips</h2>
-      <p><strong>Contextual Relevance:</strong> Guides the user in creating questions that are relevant to the specific interview context and build upon previous discussions.</p>
-      <p><strong>Question Depth:</strong> Assists the user in deepening the impact of their questions, making them more probing and insightful.</p>
-      <p><strong>Specificity:</strong> Helps the user formulate questions that are more specific and targeted, focusing on particular aspects of the interviewee's experience.</p>
-      <p><strong>Engagement:</strong> Encourages the user to craft questions that engage the interviewee, leading to more meaningful and informative responses.</p>
-      <p><strong>Open-Ended Questioning:</strong> Aids the user in developing open-ended questions that foster more discussion and critical analysis.</p>
-      <p><strong>Progressive Questioning:</strong> Helps the user create a sequence of questions that build logically and progressively on previous questions, effectively following up on earlier points.</p>
-      <p><strong>Cultural Sensitivity:</strong> Guides the user in crafting questions that are culturally sensitive and appropriate, ensuring respectful and inclusive dialogue.</p>
-      <p><strong>Innovative Angles:</strong> Encourages the user to find unique and creative angles for their questions, making the interview more interesting and dynamic.</p>
-    `;
+    <h2>Question Tips</h2>
+
+    <p><strong>1. Stay Relevant:</strong> Before asking, ask yourself “Does this connect to what the interviewee just said?” Build on their previous answer rather than changing topics suddenly.</p>
+
+    <p><strong>2. Go Deeper:</strong> If they mention something interesting, follow up with “Why do you think that happened?” or “Can you tell me more about that moment?” This turns surface answers into stories.</p>
+
+    <p><strong>3. Be Specific:</strong> Replace vague questions like “How was school?” with “What was one project at school that changed how you think?” The more specific your question, the richer the answer.</p>
+
+    <p><strong>4. Engage the Interviewee:</strong> Ask questions that invite personal reflection or emotion—like “What was the most exciting part of that experience?” or “What challenges did you face?”</p>
+
+    <p><strong>5. Ask Open-Ended Questions:</strong> Avoid yes/no questions. Instead of “Did you like it?”, try “What made that experience meaningful to you?” or “How did it change your perspective?”</p>
+
+    <p><strong>6. Build Progressively:</strong> Think of your questions as steps in a story. Start broad (“How did you get interested in this?”), then move toward deeper details (“What inspired your next step after that?”).</p>
+
+    <p><strong>7. Be Respectful and Aware:</strong> When asking about sensitive or cultural topics, phrase them with care: “If you’re comfortable sharing…” or “From your perspective, how is this viewed in your community?”</p>
+
+    <p><strong>8. Find Unique Angles:</strong> Try approaching a topic from a creative direction. Instead of “What’s your goal?”, ask “If you could describe your journey as a movie, what would the title be and why?”</p>
+
+    <p><strong>9. Listen Actively:</strong> Good questions come from listening. Take short notes and use what they say to guide your next question instead of reading from a list.</p>
+
+    <p><strong>10. End with Reflection:</strong> Finish with a thoughtful wrap-up question, like “Looking back, what lesson stands out most to you?” This helps the interview feel complete.</p>
+  `;
+
     elements.articleTextContainer.innerHTML = questionTipsText;
     elements.articleTextContainer.style.display = "block";
     elements.menuButtons.forEach(button => button.style.display = "none");
     elements.playButton.style.display = "none";
   }
+
 
   /**
    * Toggles play/pause for article reading
