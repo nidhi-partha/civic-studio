@@ -17,7 +17,6 @@ import { callOpenAI } from './openai-api.js';
     inReflectionMode: false,
     inBrainstormMode: true,
     fullTranscript: [],
-    transcript: "",
     feedbackTranscript: [],
     reflectionTranscript: [],
     brainstormTranscript: [],
@@ -254,6 +253,9 @@ import { callOpenAI } from './openai-api.js';
   function createQAblock(question, container) {
     const qaBlock = document.createElement('div');
     qaBlock.classList.add('qa-block');
+    // track transcript index and mode for in-place updates
+    qaBlock.dataset.txIndex = '';
+    qaBlock.dataset.txMode = state.inBrainstormMode ? 'brainstorm' : (state.inReflectionMode ? 'reflection' : 'interview');
 
     const questionElement = document.createElement('h4');
     questionElement.innerText = `Q: ${question}`;
@@ -273,7 +275,7 @@ import { callOpenAI } from './openai-api.js';
         answerElement.innerText = "thinking...";
         const userQuery = await captureSpeech();
         if (userQuery) {
-          await processResponse(userQuery, answerElement, questionElement);
+          await processResponse(userQuery, answerElement, questionElement, qaBlock);
         }
       } catch (error) {
         console.error('Error during QA block click:', error);
@@ -402,7 +404,6 @@ import { callOpenAI } from './openai-api.js';
           commentElement.innerText = comment;
           notesDiv.appendChild(commentElement);
           state.fullTranscript.push(`*interviewer note*: ${comment}`);
-          state.transcript += `\n*interviewer note*: ${comment}`;
           commentBox.remove();
         }
       }
@@ -413,9 +414,7 @@ import { callOpenAI } from './openai-api.js';
    * Handles pause/play toggle for audio
    */
   async function handlePausePlay(pauseBut, answerElement) {
-    // Maintain audio state per button so each block plays its own text
     try {
-      // Ignore clicks while loading/synthesizing to avoid races
       if (pauseBut.dataset.loading === 'true') return;
 
       const isPlaying = pauseBut.dataset.playing === 'true';
@@ -430,15 +429,12 @@ import { callOpenAI } from './openai-api.js';
         return;
       }
 
-      // Get the text for this block (strip leading 'A:' if present)
       const responseText = (answerElement && answerElement.innerText) ? answerElement.innerText.replace(/^A:\s*/i, '').trim() : '';
       if (!responseText) return;
 
-      // Prevent extra clicks while we synthesize/load audio
       pauseBut.dataset.loading = 'true';
-      pauseBut.src = IMAGES.pause; // immediate visual feedback
+      pauseBut.src = IMAGES.pause;
 
-      // If we already synthesized audio for a different text, recreate
       if (!pauseBut._audio || pauseBut._audioText !== responseText) {
         try {
           const audioContent = await synthesizeSpeech(responseText, state.voiceName);
@@ -453,7 +449,6 @@ import { callOpenAI } from './openai-api.js';
       }
 
       pauseBut._audio.currentTime = pauseBut._pausedTime || 0;
-      // Play and clear loading flag once playback starts (or on error)
       pauseBut._audio.play().then(() => {
         pauseBut.dataset.playing = 'true';
         pauseBut.dataset.loading = 'false';
@@ -464,7 +459,6 @@ import { callOpenAI } from './openai-api.js';
         pauseBut.src = IMAGES.play;
       });
 
-      // When this block's audio ends, update UI state
       pauseBut._audio.onended = function () {
         pauseBut.dataset.playing = 'false';
         pauseBut.src = IMAGES.play;
@@ -488,7 +482,7 @@ import { callOpenAI } from './openai-api.js';
       answerElement.innerText = "thinking...";
       const userQuery = await captureSpeech();
       if (userQuery) {
-        await processResponse(userQuery, answerElement, questionElement);
+        await processResponse(userQuery, answerElement, questionElement, qaBlock);
       }
     } catch (error) {
       console.error('Error during QA block click:', error);
@@ -519,6 +513,37 @@ import { callOpenAI } from './openai-api.js';
       });
     } catch (e) { }
 
+    // before removing DOM, remove transcript entries if present
+    try {
+      const txIndexRaw = qaBlock.dataset && qaBlock.dataset.txIndex ? qaBlock.dataset.txIndex : '';
+      const txMode = qaBlock.dataset && qaBlock.dataset.txMode ? qaBlock.dataset.txMode : 'interview';
+      const parsed = parseInt(txIndexRaw, 10);
+      if (!Number.isNaN(parsed)) {
+        let arr = state.fullTranscript;
+        if (txMode === 'reflection') arr = state.reflectionTranscript;
+        else if (txMode === 'brainstorm') arr = state.brainstormTranscript;
+
+        if (parsed >= 0 && parsed < arr.length) {
+          // remove the Q and A
+          arr.splice(parsed, 2);
+          // decrement txIndex on later blocks that reference the same array
+          const selector = `[data-tx-mode="${txMode}"]`;
+          const otherBlocks = document.querySelectorAll(selector);
+          otherBlocks.forEach(b => {
+            try {
+              if (b === qaBlock) return; // already removing
+              const v = b.dataset && b.dataset.txIndex ? parseInt(b.dataset.txIndex, 10) : NaN;
+              if (!Number.isNaN(v) && v > parsed) {
+                b.dataset.txIndex = String(v - 2);
+              }
+            } catch (e) { }
+          });
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+
     qaBlock.remove();
     iconContainer.remove();
     additionalQuestionsDiv.remove();
@@ -527,7 +552,7 @@ import { callOpenAI } from './openai-api.js';
   /**
    * Processes user response and generates AI response
    */
-  async function processResponse(userQuery, answerElement, questionElement) {
+  async function processResponse(userQuery, answerElement, questionElement, qaBlock = null) {
     const personality = PERSONALITIES[state.personalityIndex];
 
     try {
@@ -552,7 +577,45 @@ import { callOpenAI } from './openai-api.js';
       questionElement.innerText = `Q: ${userQuery}`;
       answerElement.innerText = `A: ${trimmedResponse}`;
 
-      updateTranscripts(userQuery, trimmedResponse);
+      // Determine which transcript array to update: prefer qaBlock.dataset.txMode if present
+      let txMode = null;
+      if (qaBlock && qaBlock.dataset && qaBlock.dataset.txMode) {
+        txMode = qaBlock.dataset.txMode;
+      } else if (state.inReflectionMode) {
+        txMode = 'reflection';
+      } else if (state.inBrainstormMode) {
+        txMode = 'brainstorm';
+      } else {
+        txMode = 'interview';
+      }
+
+      let targetArray = state.fullTranscript;
+      if (txMode === 'reflection') targetArray = state.reflectionTranscript;
+      else if (txMode === 'brainstorm') targetArray = state.brainstormTranscript;
+
+      // If qaBlock has an existing transcript index, replace in place; otherwise push and record index
+      let idx = null;
+      if (qaBlock && qaBlock.dataset && qaBlock.dataset.txIndex) {
+        const parsed = parseInt(qaBlock.dataset.txIndex, 10);
+        if (!Number.isNaN(parsed)) idx = parsed;
+      }
+
+      if (idx !== null && typeof idx === 'number' && idx >= 0 && idx < targetArray.length) {
+        // replace existing Q/A pair
+        targetArray[idx] = `Q: ${userQuery}`;
+        // make sure there is a slot for the answer
+        if (targetArray.length > idx + 1) {
+          targetArray[idx + 1] = `A: ${trimmedResponse}`;
+        } else {
+          // append answer if missing
+          targetArray[idx + 1] = `A: ${trimmedResponse}`;
+        }
+      } else {
+        // append new Q/A and record index on block if available
+        const newIndex = targetArray.length;
+        targetArray.push(`Q: ${userQuery}`, `A: ${trimmedResponse}`);
+        if (qaBlock && qaBlock.dataset) qaBlock.dataset.txIndex = String(newIndex);
+      }
 
       // Start audio synthesis in parallel with displaying the text
       // This allows the text to show immediately while audio loads in background
@@ -661,8 +724,7 @@ import { callOpenAI } from './openai-api.js';
     } else if (state.inBrainstormMode) {
       state.brainstormTranscript.push(`Q: ${userQuery}`, `A: ${trimmedResponse}`);
     } else {
-      state.fullTranscript.push(`Q: ${userQuery}`, `A: ${trimmedResponse}`);
-      state.transcript += `\nQ: ${userQuery}\nA: ${trimmedResponse}`;
+  state.fullTranscript.push(`Q: ${userQuery}`, `A: ${trimmedResponse}`);
     }
   }
 
@@ -760,6 +822,10 @@ import { callOpenAI } from './openai-api.js';
     qaBlock.classList.add('brainstorm-qa-block');
     qaBlock.style.backgroundColor = '#D8E2F1';
 
+    // track transcript index and mode for in-place updates
+    qaBlock.dataset.txIndex = '';
+    qaBlock.dataset.txMode = state.inReflectionMode ? 'reflection' : (state.inBrainstormMode ? 'brainstorm' : 'interview');
+
     const questionElement = document.createElement('h4');
     questionElement.innerText = `Q: ${question}`;
     qaBlock.appendChild(questionElement);
@@ -780,7 +846,7 @@ import { callOpenAI } from './openai-api.js';
     iconContainer.appendChild(pauseBut);
     container.appendChild(iconContainer);
 
-    processResponse(question, answerElement, questionElement);
+  processResponse(question, answerElement, questionElement, qaBlock);
 
     commentButton.addEventListener('click', () => handleBrainstormComment(iconContainer, container));
     pauseBut.addEventListener('click', () => handlePausePlay(pauseBut, answerElement));
@@ -1054,7 +1120,7 @@ Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
     elements.interviewContent.style.display = 'block';
     const reflectionContainer = id('reflectionContainer');
     if (reflectionContainer) {
-=      reflectionContainer.style.display = 'none';
+      reflectionContainer.style.display = 'none';
       const section = id('reflectionBlockSection');
       if (section) section.innerHTML = '';
     } else {
@@ -1167,7 +1233,6 @@ Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
           commentElement.innerText = comment;
           elements.qaContainer.appendChild(commentElement);
           state.fullTranscript.push(`*interviewer note*: ${comment}`);
-          state.transcript += `\n*interviewer note*: ${comment}`;
           commentBox.remove();
         }
       }
@@ -1571,7 +1636,8 @@ Based on this transcript and the information about ethics and privacy provide fe
    */
   function saveTranscript() {
     let transcripts = JSON.parse(localStorage.getItem("transcripts")) || [];
-    transcripts.push(state.transcript);
+    // save the structured array form of the transcript as a JSON string
+    transcripts.push(JSON.stringify(state.fullTranscript));
     localStorage.setItem("transcripts", JSON.stringify(transcripts));
   }
 
