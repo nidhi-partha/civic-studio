@@ -1,5 +1,5 @@
 // claude-api.js
-async function callClaude(prompt) {
+export async function callClaude(prompt) {
     try {
         const apiKey = await getClaudeApiKey();
 

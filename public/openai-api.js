@@ -15,7 +15,7 @@ async function getOpenAIApiKey() {
 
 
 
-async function callOpenAI(prompt) {
+export async function callOpenAI(prompt) {
     try {
         const apiKey = await getOpenAIApiKey();
         const response = await fetch('https://api.openai.com/v1/chat/completions', {

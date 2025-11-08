@@ -113,12 +113,15 @@
         <h1>Identified Interviewees</h1>
         <p class="instructions">Choose an interviewee</p>
         <div class="interviewee-container" id="interviewee-list"></div>
-        <button onclick="goToReadingPage()">Next</button>
+        <button id="next-btn">Next</button>
     </div>
 
-    <script src="claude-api.js"></script>
-    <script src="openai-api.js"></script>
-    <script>
+    <!-- <script src="claude-api.js"></script>
+    <script src="openai-api.js"></script> -->
+    <script type="module">
+        import { callClaude } from './claude-api.js';
+        import { callOpenAI } from './openai-api.js';
+
         let img = '';
         document.addEventListener('DOMContentLoaded', async (event) => {
             try {
@@ -160,6 +163,7 @@
                 console.error('Error parsing interviewees from localStorage', error);
                 alert('Failed to load interviewees. Please try again.');
             }
+            document.getElementById("next-btn").addEventListener("click", goToReadingPage);
         });
 
         let selectedInterviewee = '';

@@ -2,103 +2,158 @@
 <html lang="en">
 
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Input Article</title>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300&display=swap">
-    <style>
-        body {
-            font-family: 'Open Sans', sans-serif;
-            background-color: #E8F1FC;
-            margin: 0;
-            padding: 0;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-        }
-
-        p {
-            font-size: 20px;
-            margin-top: 0;
-            margin-bottom: 20px;
-            font-weight: 300;
-        }
-
-        textarea {
-            font-family: 'Open Sans', sans-serif;
-            font-weight: 300;
-            width: 80%;
-            height: 300px;
-            padding: 20px;
-            margin-bottom: 20px;
-            border-radius: 10px;
-            border: 1px solid #ccc;
-            font-size: 16px;
-            resize: none;
-        }
-
-        button {
-            font-family: 'Open Sans', sans-serif;
-            width: 150px;
-            padding: 15px;
-            font-size: 18px;
-            font-weight: 300;
-            background-color: #007BFF;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-        }
-
-        button:hover {
-            background-color: #0056b3;
-        }
-
-        #logo {
-            width: 400px;
-            margin-bottom: 20px;
-        }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Input Article</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300&display=swap" />
+  <style>
+    body {
+      font-family: 'Open Sans', sans-serif;
+      background-color: #E8F1FC;
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+    }
+    p {
+      font-size: 20px;
+      margin-top: 0;
+      margin-bottom: 20px;
+      font-weight: 300;
+      text-align: center;
+    }
+    textarea {
+      font-family: 'Open Sans', sans-serif;
+      font-weight: 300;
+      width: 80%;
+      max-width: 900px;
+      height: 300px;
+      padding: 20px;
+      margin-bottom: 20px;
+      border-radius: 10px;
+      border: 1px solid #ccc;
+      font-size: 16px;
+      resize: none;
+      outline: none;
+      box-sizing: border-box;
+    }
+    button {
+      font-family: 'Open Sans', sans-serif;
+      width: 150px;
+      padding: 15px;
+      font-size: 18px;
+      font-weight: 300;
+      background-color: #007BFF;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #0056b3;
+    }
+    #logo {
+      width: 400px;
+      max-width: 80%;
+      margin-bottom: 20px;
+    }
+  </style>
 </head>
 
 <body>
-    <img src="icons/logo.png" alt="Logo" id="logo">
-    <p>Input an article of your choice</p>
-    <textarea id="article-input" placeholder="Paste your article here..."></textarea>
-    <button onclick="processArticle()">Next</button>
-    <script src="claude-api.js"></script>
-    <script src="openai-api.js"></script>
-    <script>
-        async function processArticle() {
-            const articleInput = document.getElementById('article-input');
-            if (!articleInput) {
-                alert('Error: Article input field not found.');
-                return;
-            }
-            
-            const articleText = articleInput.value;
-            if (articleText.trim() === '') {
-                alert('Please input an article.');
-                return;
-            }
+  <img src="icons/logo.png" alt="Logo" id="logo" />
+  <p>Input an article of your choice</p>
+  <textarea id="article-input" placeholder="Paste your article here..."></textarea>
+  <button id="next-btn">Next</button>
 
-            const prompt = `Identify the main interviewees (max 3) in the following article:\n\n${articleText}\n\n. PLEASE RESPOND IN THIS FORMAT, USE A COLON AFTER. name:description \n name:description \n etc.`;
-            const response = await callClaude(prompt);
-            console.log(response);
-            const interviewees = response.split('\n').filter(name => name.trim() !== '');
-            console.log(interviewees);
-            localStorage.setItem('articleText', articleText);
-            localStorage.setItem('interviewees', JSON.stringify(interviewees));
-            localStorage.setItem("intervieweeNameList", JSON.stringify([]));
-            localStorage.setItem("intervieweeImageList", JSON.stringify([]));
-            localStorage.setItem("transcriptList", JSON.stringify([]));
-            localStorage.setItem("transcripts", JSON.stringify([]));
+  <!-- Single module script; no inline code on a script with src -->
+  <script type="module">
+    import { callClaude } from './claude-api.js';
+    import { callOpenAI } from './openai-api.js';
 
-            window.location.href = 'select-interviewee.html';
+    const textarea = document.getElementById('article-input');
+    const nextBtn  = document.getElementById('next-btn');
+
+    function buildPrompt(articleText) {
+      return `Identify the main interviewees (max 3) in the following article:
+
+${articleText}
+
+PLEASE RESPOND IN THIS FORMAT, USE A COLON AFTER.
+name:description
+name:description
+name:description`;
+    }
+
+    function normalizeLLMResponse(resp) {
+      // Support either a raw string or an object like { text: "..."}.
+      if (typeof resp === 'string') return resp;
+      if (resp && typeof resp.text === 'string') return resp.text;
+      // Some SDKs return { content: [{ type:"text", text:"..." }]}
+      const firstText = resp?.content?.find?.(c => typeof c?.text === 'string')?.text;
+      return typeof firstText === 'string' ? firstText : '';
+    }
+
+    function parseInterviewees(text) {
+      return text
+        .split('\n')
+        .map(s => s.trim())
+        .filter(Boolean);
+    }
+
+    async function processArticle() {
+      const raw = textarea?.value ?? '';
+      const articleText = raw.trim();
+      if (!articleText) {
+        alert('Please input an article.');
+        return;
+      }
+
+      nextBtn.disabled = true;
+      nextBtn.textContent = 'Processing...';
+
+      try {
+        const prompt = buildPrompt(articleText);
+
+        let response;
+        try {
+          // Try Claude first
+          response = await callClaude(prompt);
+        } catch (e) {
+          console.warn('callClaude failed, falling back to callOpenAI:', e);
+          response = await callOpenAI(prompt);
         }
-    </script>
-</body>
 
+        const normalized = normalizeLLMResponse(response);
+        if (!normalized) {
+          throw new Error('Empty response from the model.');
+        }
+
+        const interviewees = parseInterviewees(normalized);
+
+        // Persist
+        localStorage.setItem('articleText', articleText);
+        localStorage.setItem('interviewees', JSON.stringify(interviewees));
+        localStorage.setItem('intervieweeNameList', JSON.stringify([]));
+        localStorage.setItem('intervieweeImageList', JSON.stringify([]));
+        localStorage.setItem('transcriptList', JSON.stringify([]));
+        localStorage.setItem('transcripts', JSON.stringify([]));
+
+        // Navigate
+        window.location.href = 'select-interviewee.html';
+      } catch (err) {
+        console.error(err);
+        alert('Sorry, something went wrong while processing the article. Check the console for details.');
+      } finally {
+        nextBtn.disabled = false;
+        nextBtn.textContent = 'Next';
+      }
+    }
+
+    nextBtn.addEventListener('click', processArticle);
+  </script>
+</body>
 </html>
