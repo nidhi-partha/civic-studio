@@ -230,6 +230,16 @@ import { callOpenAI } from './openai-api.js';
         createQAblock(question, elements.qaContainer);
       });
       state.inBrainstormMode = false;
+      try {
+        const qaBlocks = elements.qaContainer.querySelectorAll('.qa-block');
+        qaBlocks.forEach(b => {
+          if (b && b.dataset && b.dataset.txMode === 'brainstorm') {
+            b.dataset.txMode = 'interview';
+          }
+        });
+      } catch (e) {
+        // ignore if DOM update fails
+      }
       displayIntervieweeInfo();
       elements.intervieweeAvatar.src = state.data.intervieweeImage;
       elements.interviewContent.style.display = 'block';
@@ -927,6 +937,7 @@ import { callOpenAI } from './openai-api.js';
       if (typeof feedbackType === 'function') {
         feedback = await feedbackType(state.fullTranscript);
       } else {
+        console.log(state.fullTranscript);
         feedback = await generalFeedback(state.fullTranscript);
       }
       const personalityScore = await evaluateInterview();
@@ -1558,8 +1569,7 @@ Based on this transcript and the information about ethics and privacy provide fe
     const element = state.contentElements[state.currentElementIndex];
     const text = element.innerText.trim();
 
-    clearHighlighting();
-    element.classList.add('highlight');
+  // highlighting removed: no-op
 
     if (text) {
       try {
@@ -1576,7 +1586,6 @@ Based on this transcript and the information about ethics and privacy provide fe
           } else {
             state.isPlaying = false;
             elements.playButton.innerHTML = '<img src="icons/play-icon.png" alt="Play">';
-            clearHighlighting();
           }
         };
 
@@ -1588,14 +1597,7 @@ Based on this transcript and the information about ethics and privacy provide fe
     }
   }
 
-  /**
-   * Clears highlighting from elements
-   */
-  function clearHighlighting() {
-    if (state.contentElements) {
-      state.contentElements.forEach(element => element.classList.remove('highlight'));
-    }
-  }
+  // Highlighting removed: no clearHighlighting function required
 
   /**
    * Handles divider drag for resizing menu
