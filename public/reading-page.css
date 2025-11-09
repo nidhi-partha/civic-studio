@@ -157,7 +157,7 @@ body {
     margin: 0;
 }
 
-.brainstorm-qa-block {
+.feedback-qa-block {
     margin-top: 20px;
     margin-bottom: 20px;
     padding: 10px;
@@ -167,12 +167,12 @@ body {
     position: relative;
 }
 
-.brainstorm-qa-block h4 {
+.feedback-qa-block h4 {
     margin: 0 0 10px;
     font-size: 22px;
 }
 
-.brainstorm-qa-block p {
+.feedback-qa-block p {
     margin: 0;
     font-size: 20px;
     line-height: 1.4;

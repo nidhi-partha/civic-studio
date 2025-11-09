@@ -11,22 +11,20 @@ import { callOpenAI } from './openai-api.js';
 
   // --- State Management ---
   let state = {
-    roundCounter: 1,
-    versionCounter: 1,
     isPlaying: false,
     inReflectionMode: false,
     inBrainstormMode: true,
     fullTranscript: [],
-    feedbackTranscript: [],
+    feedbackTranscript: [], // temporary variable for reflection/brainstorm transcript
     reflectionTranscript: [],
     brainstormTranscript: [],
     personalityIndex: 2,
     currentElementIndex: 0,
-    contentElements: null,
-    isDragging: false,
+    contentElements: null, // temporary variable used for article reading
+    isDragging: false, // variable for changing side panel width
     formattedArticle: null,
     articleFormatted: false,
-    audio: null,
+    audio: null, // used for global audio playback when per-block not available
     pausedTime: 0,
     intervieweeSummary: "",
     voiceName: 'en-US-Neural2-D',
@@ -190,8 +188,9 @@ import { callOpenAI } from './openai-api.js';
    */
   function setupUI() {
     const { intervieweeImage } = state.data;
-    const defaultImage = 'default-avatar.png';
+    const defaultImage = 'icons/default-avatar.png';
 
+    // if interviewee image exists, use it; otherwise use default
     if (intervieweeImage) {
       elements.intervieweeAvatar.src = IMAGES.teacher;
       elements.intervieweeIcon.src = intervieweeImage;
@@ -223,23 +222,15 @@ import { callOpenAI } from './openai-api.js';
     );
     console.log(state.intervieweeSummary);
 
+    // identify questions based on question marks in brainstorm text
     const questions = await identifyQuestions(brainstormText);
 
     if (questions.length > 0) {
+      state.inBrainstormMode = false;
+
       questions.forEach((question) => {
         createQAblock(question, elements.qaContainer);
       });
-      state.inBrainstormMode = false;
-      try {
-        const qaBlocks = elements.qaContainer.querySelectorAll('.qa-block');
-        qaBlocks.forEach(b => {
-          if (b && b.dataset && b.dataset.txMode === 'brainstorm') {
-            b.dataset.txMode = 'interview';
-          }
-        });
-      } catch (e) {
-        // ignore if DOM update fails
-      }
       displayIntervieweeInfo();
       elements.intervieweeAvatar.src = state.data.intervieweeImage;
       elements.interviewContent.style.display = 'block';
@@ -277,6 +268,7 @@ import { callOpenAI } from './openai-api.js';
 
     let firstClick = false;
     qaBlock.addEventListener('click', async () => {
+      // disabled in brainstorm and reflection mode and after firstClick
       if (firstClick || state.inBrainstormMode || state.inReflectionMode) return;
       firstClick = true;
       qaBlock.classList.add('clicked');
@@ -425,10 +417,13 @@ import { callOpenAI } from './openai-api.js';
    */
   async function handlePausePlay(pauseBut, answerElement) {
     try {
+      // stops repeated clicks while loading
       if (pauseBut.dataset.loading === 'true') return;
 
       const isPlaying = pauseBut.dataset.playing === 'true';
 
+      // if it is currently playing set paused time to the current time and pause
+      // also set pause button image to play button and playing to be false
       if (isPlaying) {
         if (pauseBut._audio) {
           pauseBut._pausedTime = pauseBut._audio.currentTime || 0;
@@ -439,12 +434,15 @@ import { callOpenAI } from './openai-api.js';
         return;
       }
 
+      // otherwise it is not playing so we want to play it
       const responseText = (answerElement && answerElement.innerText) ? answerElement.innerText.replace(/^A:\s*/i, '').trim() : '';
+      // if there is no response text, return
       if (!responseText) return;
 
       pauseBut.dataset.loading = 'true';
       pauseBut.src = IMAGES.pause;
 
+      // if this is the first time playing this block, synthesize audio (or its been reset)
       if (!pauseBut._audio || pauseBut._audioText !== responseText) {
         try {
           const audioContent = await synthesizeSpeech(responseText, state.voiceName);
@@ -458,6 +456,7 @@ import { callOpenAI } from './openai-api.js';
         }
       }
 
+      // otherwise start from the paused time
       pauseBut._audio.currentTime = pauseBut._pausedTime || 0;
       pauseBut._audio.play().then(() => {
         pauseBut.dataset.playing = 'true';
@@ -469,6 +468,7 @@ import { callOpenAI } from './openai-api.js';
         pauseBut.src = IMAGES.play;
       });
 
+      // once it has ended reset variables
       pauseBut._audio.onended = function () {
         pauseBut.dataset.playing = 'false';
         pauseBut.src = IMAGES.play;
@@ -503,7 +503,7 @@ import { callOpenAI } from './openai-api.js';
    * Handles deletion of Q&A block
    */
   function handleTrash(qaBlock, iconContainer, additionalQuestionsDiv) {
-    // Stop and clean up any per-block audio attached to icons inside this container
+    // stop and clean up any per-block audio attached to icons inside this container
     try {
       const pauseIcons = iconContainer.querySelectorAll('img');
       pauseIcons.forEach(img => {
@@ -574,10 +574,12 @@ import { callOpenAI } from './openai-api.js';
       let userQuestion;
       let voiceName = state.voiceName;
 
+      // if in reflection or brainstorm mode --> call the feedback agent (buildFeedbackPrompt)
       if (state.inReflectionMode || state.inBrainstormMode) {
         userQuestion = buildFeedbackPrompt(userQuery);
         voiceName = 'en-US-Neural2-J';
       } else {
+        // if in interview mode --> call the interviewee agent (buildIntervieweePrompt)
         userQuestion = buildIntervieweePrompt(userQuery, personality, intervieweeName, intervieweeInfo);
       }
 
@@ -587,7 +589,8 @@ import { callOpenAI } from './openai-api.js';
       questionElement.innerText = `Q: ${userQuery}`;
       answerElement.innerText = `A: ${trimmedResponse}`;
 
-      // Determine which transcript array to update: prefer qaBlock.dataset.txMode if present
+      // determine which transcript array to update: prefer qaBlock.dataset.txMode if present
+      // mainly for error handling
       let txMode = null;
       if (qaBlock && qaBlock.dataset && qaBlock.dataset.txMode) {
         txMode = qaBlock.dataset.txMode;
@@ -603,7 +606,9 @@ import { callOpenAI } from './openai-api.js';
       if (txMode === 'reflection') targetArray = state.reflectionTranscript;
       else if (txMode === 'brainstorm') targetArray = state.brainstormTranscript;
 
-      // If qaBlock has an existing transcript index, replace in place; otherwise push and record index
+      // if qaBlock has an existing transcript index, replace in place
+      // otherwise push and record index
+      // (for redo handling)
       let idx = null;
       if (qaBlock && qaBlock.dataset && qaBlock.dataset.txIndex) {
         const parsed = parseInt(qaBlock.dataset.txIndex, 10);
@@ -617,8 +622,8 @@ import { callOpenAI } from './openai-api.js';
         if (targetArray.length > idx + 1) {
           targetArray[idx + 1] = `A: ${trimmedResponse}`;
         } else {
-          // append answer if missing
-          targetArray[idx + 1] = `A: ${trimmedResponse}`;
+          // append answer if missing (error handling mainly -- should be there)
+          targetArray.push(`A: ${trimmedResponse}`);
         }
       } else {
         // append new Q/A and record index on block if available
@@ -627,14 +632,14 @@ import { callOpenAI } from './openai-api.js';
         if (qaBlock && qaBlock.dataset) qaBlock.dataset.txIndex = String(newIndex);
       }
 
-      // Start audio synthesis in parallel with displaying the text
-      // This allows the text to show immediately while audio loads in background
+      // start audio synthesis in *parallel* with displaying the text
+      // allows the text to show immediately while audio loads in background
       synthesizeSpeech(trimmedResponse, voiceName)
         .then(audioContent => {
-          // Create Audio object for this response
+          // create audio object for this response
           const audioObj = new Audio(`data:audio/mp3;base64,${audioContent}`);
 
-          // Try to attach the audio to the pause button for this block so pause controls this audio
+          // attach the audio to the pause button for this block so pause controls this audio
           let attachedToPause = false;
           let pauseBut = null;
           try {
@@ -655,12 +660,12 @@ import { callOpenAI } from './openai-api.js';
             console.warn('Could not attach audio to pause button:', e);
           }
 
-          // If we did not attach to a block pause button, fall back to global state.audio
+          // error handling: if we did not attach to a block pause button, fall back to global state.audio
           if (!attachedToPause) {
             state.audio = audioObj;
           }
 
-          // Play the audio (either attached object or global/state audio)
+          // play the audio (either attached object or global/state audio)
           audioObj.play().then(() => {
             if (attachedToPause && pauseBut) {
               pauseBut.dataset.playing = 'true';
@@ -671,13 +676,14 @@ import { callOpenAI } from './openai-api.js';
           }).catch(err => {
             console.error('Error playing audio object:', err);
             if (attachedToPause && pauseBut) {
+              // reset
               pauseBut.dataset.playing = 'false';
               pauseBut.dataset.loading = 'false';
               pauseBut.src = IMAGES.play;
             }
           });
 
-          // Ensure UI updates when audio ends
+          // Ensure UI updates when audio ends (because the user may not have used pause play button)
           audioObj.onended = function () {
             try {
               if (attachedToPause && pauseBut) {
@@ -685,6 +691,7 @@ import { callOpenAI } from './openai-api.js';
                 pauseBut.src = IMAGES.play;
                 pauseBut._pausedTime = 0;
               } else {
+                // error handling
                 state.pausedTime = 0;
                 // if global audio ended, clear state.audio reference
                 if (state.audio === audioObj) state.audio = null;
@@ -734,12 +741,12 @@ import { callOpenAI } from './openai-api.js';
     } else if (state.inBrainstormMode) {
       state.brainstormTranscript.push(`Q: ${userQuery}`, `A: ${trimmedResponse}`);
     } else {
-  state.fullTranscript.push(`Q: ${userQuery}`, `A: ${trimmedResponse}`);
+    state.fullTranscript.push(`Q: ${userQuery}`, `A: ${trimmedResponse}`);
     }
   }
 
   /**
-   * Captures speech input from microphone
+   * Captures speech input from microphone + handles UI changes
    */
   async function captureSpeech() {
     return new Promise((resolve, reject) => {
@@ -825,11 +832,11 @@ import { callOpenAI } from './openai-api.js';
   }
 
   /**
-   * Adds Q&A block to brainstorm container
+   * Adds Q&A block to brainstorm or reflection container (only has 2 icon buttons - comment and pause)
    */
   function addQAtoNewContainer(question, container) {
     const qaBlock = document.createElement('div');
-    qaBlock.classList.add('brainstorm-qa-block');
+    qaBlock.classList.add('feedback-qa-block');
     qaBlock.style.backgroundColor = '#D8E2F1';
 
     // track transcript index and mode for in-place updates
@@ -908,17 +915,28 @@ import { callOpenAI } from './openai-api.js';
 
   /**
    * Handles pause/reflect button click
+   * adds reflection prompt and feedback if not in reflection mode
+   * and changes to reflection mode also checks personality score and changes
+   * personality if score >= 7
+   * if already in reflection mode, exits reflection mode
    */
-  function handlePauseReflect() {
+  async function handlePauseReflect() {
     if (state.inReflectionMode) {
       state.inReflectionMode = false;
-      hideBottomBarElements();
+      showBottomBarElements();
       return;
     }
     elements.intervieweeAvatar.src = IMAGES.teacher;
-    // Start reflection with general feedback; module-specific feedback (like cognitiveEngagement)
+    // Start reflection with general feedback
+    // module-specific feedback (like cognitiveEngagement)
     // will be available as buttons under the general feedback.
     addReflectionAndRedoPrompt();
+    const personalityScore = await evaluateInterview();
+
+    if (personalityScore >= 7) {
+      state.personalityIndex = (state.personalityIndex + 1) % 8;
+      alert("Great job with the current personality! You may see some changes in the interviewee's personality now!");
+    }
   }
 
   /**
@@ -939,12 +957,6 @@ import { callOpenAI } from './openai-api.js';
       } else {
         console.log(state.fullTranscript);
         feedback = await generalFeedback(state.fullTranscript);
-      }
-      const personalityScore = await evaluateInterview();
-
-      if (personalityScore >= 7) {
-        state.personalityIndex = (state.personalityIndex + 1) % 8;
-        alert("Great job with the current personality! You may see some changes in the interviewee's personality now!");
       }
 
       const audioContent = await synthesizeSpeech(feedback, 'en-US-Neural2-D');
@@ -1014,34 +1026,34 @@ import { callOpenAI } from './openai-api.js';
   function buildInterviewScoringPrompt() {
     return `Please evaluate the following interview transcript based on two measures: Interviewee's Response Quality and Interviewer's Respectfulness. For each measure, answer the following 10 yes/no questions. Each "yes" answer is worth 1 point, for a total possible score of 10 points per category.
 
-Interviewee's Response Quality:
-1. Did the interviewee provide clear and concise answers?
-2. Did the interviewee demonstrate in-depth knowledge of their product/service?
-3. Did the interviewee use specific examples or data to support their points?
-4. Did the interviewee explain complex concepts in an understandable way?
-5. Did the interviewee discuss the broader impact or context of their work?
-6. Did the interviewee address potential challenges or limitations?
-7. Did the interviewee discuss future plans or developments?
-8. Did the interviewee show enthusiasm and engagement in their responses?
-9. Did the interviewee provide unique insights or perspectives?
-10. Did the interviewee effectively communicate the value proposition of their product/service?
+      Interviewee's Response Quality:
+      1. Did the interviewee provide clear and concise answers?
+      2. Did the interviewee demonstrate in-depth knowledge of their product/service?
+      3. Did the interviewee use specific examples or data to support their points?
+      4. Did the interviewee explain complex concepts in an understandable way?
+      5. Did the interviewee discuss the broader impact or context of their work?
+      6. Did the interviewee address potential challenges or limitations?
+      7. Did the interviewee discuss future plans or developments?
+      8. Did the interviewee show enthusiasm and engagement in their responses?
+      9. Did the interviewee provide unique insights or perspectives?
+      10. Did the interviewee effectively communicate the value proposition of their product/service?
 
-Interviewer's Respectfulness:
-1. Did the interviewer use a polite and professional tone throughout?
-2. Did the interviewer allow the interviewee to finish their thoughts without interruption?
-3. Did the interviewer actively listen and ask relevant follow-up questions?
-4. Did the interviewer show appreciation for the interviewee's time and expertise?
-5. Did the interviewer phrase questions in a neutral, non-judgmental manner?
-6. Did the interviewer respect any confidentiality or sensitivity around certain topics?
-7. Did the interviewer give the interviewee opportunities to elaborate or add information?
-8. Did the interviewer maintain a comfortable pace for the conversation?
-9. Did the interviewer use the interviewee's name and/or title appropriately?
-10. Did the interviewer conclude the interview respectfully, thanking the interviewee?
+      Interviewer's Respectfulness:
+      1. Did the interviewer use a polite and professional tone throughout?
+      2. Did the interviewer allow the interviewee to finish their thoughts without interruption?
+      3. Did the interviewer actively listen and ask relevant follow-up questions?
+      4. Did the interviewer show appreciation for the interviewee's time and expertise?
+      5. Did the interviewer phrase questions in a neutral, non-judgmental manner?
+      6. Did the interviewer respect any confidentiality or sensitivity around certain topics?
+      7. Did the interviewer give the interviewee opportunities to elaborate or add information?
+      8. Did the interviewer maintain a comfortable pace for the conversation?
+      9. Did the interviewer use the interviewee's name and/or title appropriately?
+      10. Did the interviewer conclude the interview respectfully, thanking the interviewee?
 
-For each category, provide the total score out of 10 based on the number of "yes" answers.
-On the last line, write the average of the two scores as a single number (e.g., 7.5).
+      For each category, provide the total score out of 10 based on the number of "yes" answers.
+      On the last line, write the average of the two scores as a single number (e.g., 7.5).
 
-Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
+      Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
   }
 
   /**
@@ -1089,12 +1101,12 @@ Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
     const iconContainer = createReflectionIconContainer(feedback);
     const buttonContainer = createModuleButtonContainer();
 
-  const pauseIcon = iconContainer.querySelector('img[alt="Pause"]');
+    const pauseIcon = iconContainer.querySelector('img[alt="Pause"]');
 
-  reflectionHeaderDiv.appendChild(reflectionHeader);
-  reflectionHeaderDiv.appendChild(feedbackBlock);
-  reflectionHeaderDiv.appendChild(iconContainer);
-  reflectionHeaderDiv.appendChild(buttonContainer);
+    reflectionHeaderDiv.appendChild(reflectionHeader);
+    reflectionHeaderDiv.appendChild(feedbackBlock);
+    reflectionHeaderDiv.appendChild(iconContainer);
+    reflectionHeaderDiv.appendChild(buttonContainer);
 
     const reflectionPromptDiv = document.createElement('div');
     reflectionPromptDiv.classList.add('reflection-prompt');
@@ -1228,6 +1240,7 @@ Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
 
   /**
    * Handles comment in reflection mode
+   * TODO combine with handleComment and edit function calls
    */
   function handleReflectionComment(iconContainer) {
     const commentBox = document.createElement('textarea');
@@ -1252,6 +1265,7 @@ Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
 
   /**
    * Handles pause/play in reflection mode
+   * TODO combine with handlePausePlay and edit function calls
    */
   async function handleReflectionPausePlay(pauseBut, feedback) {
     try {
@@ -1343,10 +1357,18 @@ Here is the REAL transcript that you MUST grade: ${state.fullTranscript}`;
    * Feedback function: Cognitive Engagement
    */
   async function cognitiveEngagement(transcriptContent) {
-    const prompt = `Cognitive engagement is the interviewer's ability to pay close attention to the interview. They should be able to reference to previous answers, ask for clarifications and elaborations, and paraphrase the interviewee's answers. Cognitive engagement also shows the interviewer's ability to give good follow up questions. Follow-up questions should be directly related to the interviewee's previous responses. They should seek to clarify, expand, or challenge the statements made by the interviewee.
-Examples: 'You mentioned there were significant challenges in the project. Can you explain what you mean by significant challenges?' 'What did you mean when you said the team was 'innovative'?' 'You talked about a major setback last year. Can you tell me more about that?'
-Here is a transcript of an interview: ${transcriptContent}
-Based on this transcript and the information about cognitive engagement provide feedback on the interviewers cognitive engagement. Your feedback should be specific to the transcript and you should be speaking to the interviewer.`;
+    const prompt = `You are an expert journalism coach. Review the following interview transcript and provide a focused, structured assessment of the INTERVIEWER'S cognitive engagement (their attention to the interviewee's answers, follow-up quality, and ability to elicit depth).
+
+Transcript:
+${transcriptContent}
+
+Please respond with the following structured sections (use short bullet lists and concise rationales):
+1) Summary (1-2 sentences): a high-level judgment of cognitive engagement.
+2) Strengths (up to 3): for each, give a 1-sentence rationale and include a short supporting excerpt from the transcript.
+3) Weaknesses (up to 3): for each, give a 1-2 sentence rationale and include a short supporting excerpt from the transcript.
+4) Actionable suggestions (up to 3), prioritized by impact: for each, provide an exact example question or phrase the interviewer could use to improve cognitive engagement.
+
+Be concise, specific, and tie every point to the transcript when possible.`;
 
     return await callClaude(prompt);
   }
@@ -1357,8 +1379,18 @@ Based on this transcript and the information about cognitive engagement provide 
    * more specific feedback on demand.
    */
   async function generalFeedback(transcriptContent) {
-    const prompt = "You are an expert journalist. A student has just done part of their first interview with an interviewee. Give them feedback on their interview. Talk about their strengths and then some weaknesses with specific examples from the transcript." +
-      `\n\nTranscript:\n${transcriptContent}`;
+    const prompt = `You are an experienced journalism instructor. Given the transcript below, provide a concise, structured evaluation of the INTERVIEW as a whole aimed at helping a student improve.
+
+Transcript:
+${transcriptContent}
+
+Return the assessment in these sections:
+1) Brief summary (2-3 sentences) of overall performance.
+2) Top 3 strengths with a one-sentence rationale and a short supporting excerpt for each.
+3) Top 3 weaknesses with a one-sentence rationale and a short supporting excerpt for each.
+4) Three prioritized, concrete next-step recommendations (what to practice and exact example phrasings to use).
+
+Keep each item short and actionable; when suggesting phrasings, show the exact words the student can use.`;
 
     return await callClaude(prompt);
   }
@@ -1367,10 +1399,18 @@ Based on this transcript and the information about cognitive engagement provide 
    * Feedback function: Tone and Language
    */
   async function toneAndLanguage(transcriptContent) {
-    const prompt = `Effective tone and language should be appropriate, empathetic, and encouraging, fostering a positive environment for the interview so the interviewee is comfortable. To have good tone and language the interviewer should show empathy in their responses, have a non-judgemental stance, listen actively, be sensitive to emotional cues, and have a positive/encouraging tone.
-Examples: Empathy: 'I can understand how that experience must have been challenging for you. Can you tell me more about how you handled it?' Non-judgemental: 'Can you share your perspective on this issue?' instead of 'Don't you think your view is a bit extreme?'
-Here is a transcript of an interview: ${transcriptContent}
-Based on this transcript and the information about tone and language provide feedback on the interviewers tone and language. Your feedback should be specific to the transcript and you should be speaking to the interviewer.`;
+    const prompt = `Assess the INTERVIEWER'S tone and language in the transcript below. Focus on empathy, neutrality, clarity, and whether the language encouraged open responses.
+
+Transcript:
+${transcriptContent}
+
+Provide a structured response:
+1) Short summary (1-2 sentences).
+2) Examples of effective tone (up to 3) with a one-line rationale and transcript excerpt for each.
+3) Problematic phrases or tones (up to 3) with a one-line rationale and a suggested revision (exact rewrite) that keeps the intent but improves tone.
+4) Two short practice exercises the student can do to improve tone and language (include example prompts to practice).
+
+Be concrete and give exact rewrites where requested.`;
 
     return await callClaude(prompt);
   }
@@ -1379,10 +1419,19 @@ Based on this transcript and the information about tone and language provide fee
    * Feedback function: Question Quality
    */
   async function questionQuality(transcriptContent) {
-    const prompt = `High-quality questions should be clear, relevant, impactful, open-ended, and free of ambiguity. These questions should help create discussion, encourage critical analysis, and get detailed and thoughtful responses from the interviewee.
-Examples: Clear: 'What motivated you to start this project?' Relevant: 'How did your experience at the previous company shape your current business strategy?' Impact: 'What are the long-term implications of this policy change for your community?'
-Here is a transcript of an interview: ${transcriptContent}
-Based on this transcript and the information about question quality provide feedback on the interviewers question quality. Your feedback should be specific to the transcript and you should be speaking TO the interviewer.`;
+    const prompt = `Evaluate the QUALITY of the INTERVIEWER'S questions in the transcript below. Consider clarity, specificity, openness (open-ended vs yes/no), and ability to elicit depth.
+
+Transcript:
+${transcriptContent}
+
+Return a structured assessment:
+1) Brief summary (1-2 sentences).
+2) Top 3 well-formulated questions from the transcript (quote them and say why they worked).
+3) Top 3 weak or missed-opportunity questions (quote them and explain how they could be improved).
+4) For each weak question, provide an exact rewritten version that is clearer/more open-ended and explain why the rewrite is better.
+5) Suggest two quick heuristics the interviewer can use to craft better questions during an interview.
+
+Be practical and include exact rewrites the student can use immediately.`;
 
     return await callClaude(prompt);
   }
@@ -1391,9 +1440,18 @@ Based on this transcript and the information about question quality provide feed
    * Feedback function: Power Dynamics
    */
   async function powerDynamics(transcriptContent) {
-    const prompt = `Power dynamics is the balance of control and influence between the interviewer and interviewee. The interviewer should have respectful and equitable interactions with the interviewee. It is important that the interviewer doesn't talk too much (which will make the interviewee passive) but also doesn't talk too little (which will make the interviewee doubt themself)
-Here is a transcript of an interview: ${transcriptContent}
-Based on this transcript and the information about power dynamics provide feedback on the interviewers power dynamics. Your feedback should be specific to the transcript and you should be speaking to the interviewer.`;
+    const prompt = `Analyze the POWER DYNAMICS in the transcript below. Focus on who is leading the conversation, interruptions, dominance, and whether the interviewer created space for the interviewee to speak fully.
+
+Transcript:
+${transcriptContent}
+
+Provide a concise, structured response:
+1) Summary (1-2 sentences): overall balance assessment.
+2) Evidence of imbalance (up to 3 examples): quote the transcript excerpt and explain why it indicates imbalance (e.g., interruption, leading language, excessive framing).
+3) Concrete strategies (up to 4) the interviewer can use to rebalance power, with exact example phrasings to implement each strategy (e.g., prompts to allow longer answers, softeners, invitation phrases).
+4) One quick practice drill to help the interviewer notice and correct power imbalances in real time.
+
+Keep recommendations actionable and include exact wording.`;
 
     return await callClaude(prompt);
   }
@@ -1402,9 +1460,18 @@ Based on this transcript and the information about power dynamics provide feedba
    * Feedback function: Cultural Knowledge
    */
   async function culturalKnowledge(transcriptContent) {
-    const prompt = `Cultural knowledge makes sure that an interview is conducted in a manner that is both respectful and relevant to the interviewee's cultural context. The interviewer should demonstrate awareness of the cultural backgrounds of their subjects and incorporate this understanding into the conversation. This may not apply to all interviews.
-Here is a transcript of an interview: ${transcriptContent}
-Based on this transcript and the information about cultural knowledge provide feedback on the interviewers cultural knowledge. Your feedback should be specific to the transcript and you should be speaking to the interviewer.`;
+    const prompt = `Assess the INTERVIEWER'S cultural awareness and sensitivity in the transcript below. Consider whether questions and language were respectful, contextually appropriate, and attentive to cultural cues.
+
+Transcript:
+${transcriptContent}
+
+Return a structured evaluation:
+1) Brief summary (1-2 sentences).
+2) Any culturally sensitive issues or missed cues (list up to 3), with a short explanation and the transcript excerpt.
+3) Suggested phrasing replacements or framing adjustments (exact rewrites) to make the interaction more culturally respectful and inclusive.
+4) Practical guidance for preparing culturally informed questions before an interview (3 short steps).
+
+Be specific and provide exact language when suggesting rewrites.`;
 
     return await callClaude(prompt);
   }
@@ -1413,9 +1480,18 @@ Based on this transcript and the information about cultural knowledge provide fe
    * Feedback function: Fact Checking
    */
   async function factChecking(transcriptContent) {
-    const prompt = `Fact-checking during an interview involves carefully listening to the interviewee's responses and identifying any inconsistencies or discrepancies. The interviewer must then address these inconsistencies in a respectful and non-confrontational manner to maintain the interview's integrity and ensure accurate information. This may not apply to all interviews.
-Here is a transcript of an interview: ${transcriptContent}
-Based on this transcript and the information about fact checking provide feedback on the interviewers fact checking. Your feedback should be specific to the transcript and you should be speaking to the interviewer.`;
+    const prompt = `Review the transcript for factual consistency and opportunities for in-interview fact-checking. Identify places where claims should be probed, clarified, or verified.
+
+Transcript:
+${transcriptContent}
+
+Provide a structured output:
+1) Short summary (1-2 sentences) about the interviewer’s fact-checking approach.
+2) List up to 5 statements or claims from the transcript that merit follow-up or verification (quote the claim and explain why).
+3) For each claim, provide one respectful, neutral follow-up question the interviewer could have asked to verify or clarify (exact wording).
+4) A short note on how to balance fact-checking with rapport so the interviewee doesn't feel attacked.
+
+Be precise and offer exact phrasings for quick use.`;
 
     return await callClaude(prompt);
   }
@@ -1424,9 +1500,18 @@ Based on this transcript and the information about fact checking provide feedbac
    * Feedback function: Ethics and Privacy
    */
   async function ethicsAndPrivacy(transcriptContent) {
-    const prompt = `Ethics and privacy is how the interviewer asks questions respect the interviewee's privacy and adhere to ethical standards, avoiding sensitive or inappropriate topics. Ethics and privacy may not apply to every conversation. Here the interviewer should be careful not to hold any biases. It is also important that the interviewer stays transparent with what their interview will be on and are respectful of the interviewee's privacy.
-Here is a transcript of an interview: ${transcriptContent}
-Based on this transcript and the information about ethics and privacy provide feedback on the interviewers ethics and privacy. Your feedback should be specific to the transcript and you should be speaking to the interviewer.`;
+    const prompt = `Assess the interview for ETHICAL and PRIVACY concerns based on the transcript below. Focus on consent, sensitive topics, and respectful boundaries.
+
+Transcript:
+${transcriptContent}
+
+Please return a structured response:
+1) Brief summary (1-2 sentences) of any ethical/privacy risks.
+2) Any questions or phrasing that may breach privacy or be insensitive (up to 4), with exact excerpt and a short explanation.
+3) For each problematic item, provide an ethically safer rewrite (exact wording) and guidance on when to seek consent or avoid the topic.
+4) Short checklist (3 items) the interviewer can run through before asking potentially sensitive questions (e.g., signal consent, explain purpose, offer opt-out).
+
+Be concise, practical, and provide exact phrasings the student can use.`;
 
     return await callClaude(prompt);
   }
@@ -1541,7 +1626,7 @@ Based on this transcript and the information about ethics and privacy provide fe
 
 
   /**
-   * Toggles play/pause for article reading
+   * Toggles play/pause for *article reading*
    */
   async function togglePlayPause() {
     if (state.isPlaying) {
@@ -1568,8 +1653,6 @@ Based on this transcript and the information about ethics and privacy provide fe
   async function playNextElement(startTime = 0) {
     const element = state.contentElements[state.currentElementIndex];
     const text = element.innerText.trim();
-
-  // highlighting removed: no-op
 
     if (text) {
       try {
@@ -1638,7 +1721,6 @@ Based on this transcript and the information about ethics and privacy provide fe
    */
   function saveTranscript() {
     let transcripts = JSON.parse(localStorage.getItem("transcripts")) || [];
-    // save the structured array form of the transcript as a JSON string
     transcripts.push(JSON.stringify(state.fullTranscript));
     localStorage.setItem("transcripts", JSON.stringify(transcripts));
   }
