@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Login</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300&display=swap" />
+  <style>
+    body {
+      font-family: 'Open Sans', sans-serif;
+      background-color: #E8F1FC;
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 32px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+      text-align: center;
+      max-width: 400px;
+      width: 90%;
+    }
+    h1 {
+      margin-top: 0;
+      margin-bottom: 16px;
+      font-weight: 400;
+    }
+    button {
+      font-family: 'Open Sans', sans-serif;
+      padding: 12px 20px;
+      font-size: 16px;
+      background-color: #007BFF;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover { background-color: #0056b3; }
+    p { margin-bottom: 20px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Welcome</h1>
+    <p>Sign in to save your interviews and continue where you left off.</p>
+    <button id="google-signin">Sign in with Google</button>
+  </div>
+
+  <script type="module">
+    import {
+      auth,
+      signInWithPopup,
+      GoogleAuthProvider,
+      onAuthStateChanged
+    } from './firebase-init.js';
+
+    const provider = new GoogleAuthProvider();
+    const btn = document.getElementById('google-signin');
+
+    btn.addEventListener('click', async () => {
+      try {
+        await signInWithPopup(auth, provider);
+        // onAuthStateChanged will handle redirect
+      } catch (err) {
+        console.error(err);
+        alert('Sign-in failed. See console for details.');
+      }
+    });
+
+    onAuthStateChanged(auth, (user) => {
+      if (user) {
+        // Already logged in → go to main app
+        window.location.href = 'index.html';
+      }
+    });
+  </script>
+</body>
+</html>

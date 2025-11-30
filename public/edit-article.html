@@ -29,6 +29,25 @@
             background-color: #0056b3;
         }
 
+        .logout-button {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: 'Open Sans', sans-serif;
+            z-index: 10000;
+        }
+
+        .logout-button:hover {
+            background-color: #0056b3;
+        }
+
         #editor-container {
             flex: 1;
             margin: 60px 10px 0;
@@ -46,15 +65,32 @@
 </head>
 <body>
     <button class="back-button" onclick="goBack()">Back</button>
+    <button id="logout-btn" class="logout-button">Sign Out</button>
 
     <div id="editor-container">
         <div id="editor"></div>
     </div>
 
     <script src="https://cdn.quilljs.com/1.3.7/quill.min.js"></script>
-    <script>
+    <script type="module">
+        import { auth, signOut } from './firebase-init.js';
+
         function goBack() {
             window.history.back();
+        }
+
+        // Sign out button
+        const logoutBtn = document.getElementById('logout-btn');
+        if (logoutBtn) {
+            logoutBtn.addEventListener('click', async () => {
+                try {
+                    await signOut(auth);
+                    window.location.replace('login.html');
+                } catch (err) {
+                    console.error(err);
+                    alert('Failed to sign out. Check console.');
+                }
+            });
         }
 
         var quill = new Quill('#editor', {

@@ -136,6 +136,38 @@ body {
     margin-bottom: 10px;
 }
 
+/* Tab bar styles */
+#tabBar {
+    margin-bottom: 12px;
+}
+.tab-button {
+    background-color: #f1f5f9;
+    border: none;
+    padding: 8px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 700;
+}
+.tab-button:disabled {
+    background-color: #d8e2f1;
+    cursor: default;
+}
+
+.tab-button.active {
+    background-color: #d8e2f1;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+}
+
+/* Reflection loading placeholder */
+.reflection-loading {
+    padding: 18px;
+    border-radius: 8px;
+    background: #f1f5f9;
+    font-size: 18px;
+    color: #333;
+    margin-bottom: 12px;
+}
+
 .content p {
     font-size: 25px;
     margin-top: 0;
@@ -490,4 +522,24 @@ body {
     justify-content: flex-start;
     gap: 10px;
     margin-top: 20px;
+}
+
+.logout-button {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    padding: 10px 20px;
+    font-size: 16px;
+    background-color: #007BFF;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: 'Open Sans', sans-serif;
+    font-weight: 300;
+    z-index: 10000;
+}
+
+.logout-button:hover {
+    background-color: #0056b3;
 }

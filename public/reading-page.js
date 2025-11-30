@@ -4,6 +4,7 @@
 
 import { callClaude } from './claude-api.js';
 import { callOpenAI } from './openai-api.js';
+import { auth, signOut } from './firebase-init.js';
 
 "use strict";
 
@@ -68,6 +69,38 @@ import { callOpenAI } from './openai-api.js';
     setupEventListeners();
     loadStoredData();
     setupUI();
+    // set default tab to Interview (static tabs are now in HTML)
+    try { switchToInterviewTab(); } catch (e) { }
+  }
+
+  function switchToInterviewTab() {
+    const intTab = id('tab-interview');
+    const refTab = id('tab-reflection');
+    if (elements.interviewContent) elements.interviewContent.style.display = 'block';
+    const reflectionContainer = id('reflectionContainer');
+    if (reflectionContainer) reflectionContainer.style.display = 'none';
+    // Use active class for visual state; do not disable tabs so user can switch freely
+    if (intTab) { intTab.classList.add('active'); intTab.style.opacity = '1'; }
+    if (refTab) { refTab.classList.remove('active'); refTab.style.opacity = '1'; }
+    // show brainstorm section when on interview tab
+    try {
+      if (elements.brainstormSection) elements.brainstormSection.style.display = 'block';
+    } catch (e) { }
+  }
+
+  function switchToReflectionTab() {
+    const intTab = id('tab-interview');
+    const refTab = id('tab-reflection');
+    if (elements.interviewContent) elements.interviewContent.style.display = 'none';
+    const reflectionContainer = id('reflectionContainer');
+    if (reflectionContainer) reflectionContainer.style.display = 'block';
+    // Use active class for visual state; do not disable tabs so user can switch freely
+    if (intTab) { intTab.classList.remove('active'); intTab.style.opacity = '1'; }
+    if (refTab) { refTab.classList.add('active'); refTab.style.opacity = '1'; }
+    // hide brainstorm section when viewing reflection
+    try {
+      if (elements.brainstormSection) elements.brainstormSection.style.display = 'none';
+    } catch (e) { }
   }
 
   /**
@@ -92,6 +125,7 @@ import { callOpenAI } from './openai-api.js';
       interviewContent: id('interviewContent'),
       doneButton: id('doneButton'),
       brainstormTextarea: qs('.brainstorm-textarea'),
+      brainstormSection: id('brainstormSection'),
       loadingIndicator: id('loadingIndicator')
     };
   }
@@ -132,6 +166,48 @@ import { callOpenAI } from './openai-api.js';
     id("newIntervieweeButton").addEventListener('click', handleNewInterviewee);
     id("createBlogButton").addEventListener('click', handleCreateBlog);
 
+    // Sign out button
+    const logoutBtn = id('logout-btn');
+    if (logoutBtn) {
+      logoutBtn.addEventListener('click', async () => {
+        try {
+          await signOut(auth);
+          window.location.replace('login.html');
+        } catch (err) {
+          console.error(err);
+          alert('Failed to sign out. Check console.');
+        }
+      });
+    }
+
+  // Tab buttons (static in HTML)
+  const tabInterview = id('tab-interview');
+  const tabReflection = id('tab-reflection');
+  if (tabInterview) tabInterview.addEventListener('click', switchToInterviewTab);
+  if (tabReflection) tabReflection.addEventListener('click', switchToReflectionTab);
+    // Reflection tab should be disabled until the user triggers reflection at least once
+    try {
+      if (tabReflection) {
+        tabReflection.disabled = true;
+        tabReflection.style.opacity = '0.7';
+      }
+      // mark interview tab active visually
+      if (tabInterview) {
+        tabInterview.classList.add('active');
+      }
+    } catch (e) { }
+
+    // Disable the reflection Done button until reflection is started
+    try {
+      const reflectionDoneButton = id('reflectionDoneButton');
+      if (reflectionDoneButton) {
+        reflectionDoneButton.disabled = true;
+        reflectionDoneButton.style.opacity = '0.7';
+        // ensure it calls finishReflection if clicked (safety wiring)
+        reflectionDoneButton.addEventListener('click', finishReflection);
+      }
+    } catch (e) { }
+
     setElementTitles();
   }
 
@@ -169,6 +245,7 @@ import { callOpenAI } from './openai-api.js';
     const intervieweeName = localStorage.getItem('intervieweeName');
     const intervieweeGender = localStorage.getItem('intervieweeGender');
     const intervieweeImage = localStorage.getItem('selectedIntervieweeImage');
+    const selectedPersonalityIndex = localStorage.getItem('selectedPersonalityIndex');
 
     state.data = {
       articleText,
@@ -177,6 +254,14 @@ import { callOpenAI } from './openai-api.js';
       intervieweeGender,
       intervieweeImage
     };
+
+    // Load selected personality index if available, otherwise use default (2)
+    if (selectedPersonalityIndex !== null && selectedPersonalityIndex !== undefined) {
+      const personalityIndex = parseInt(selectedPersonalityIndex, 10);
+      if (!isNaN(personalityIndex) && personalityIndex >= 0 && personalityIndex < PERSONALITIES.length) {
+        state.personalityIndex = personalityIndex;
+      }
+    }
 
     if (intervieweeGender === "female") {
       state.voiceName = 'en-US-Journey-O';
@@ -714,14 +799,30 @@ import { callOpenAI } from './openai-api.js';
    */
   function buildFeedbackPrompt(userQuery) {
     const { intervieweeInfo } = state.data;
-    return `You are a feedback coach assisting a high school journalism student with their interview skills. Here is the student's interview transcript along with some notes that they took: "${state.fullTranscript}". The student is interviewing "${intervieweeInfo}". Here is your conversation so far: "${state.feedbackTranscript}" Answer this question that the student asked: "${userQuery}". Your answer should be specific, helpful, and concise and related to this specific interview. Your answer should be limited to 3 sentences.`;
+    return `You are a feedback coach assisting a high school journalism student with their interview skills.
+      Here is the student's interview transcript along with some notes that they took: "${state.fullTranscript}".
+      The student is interviewing "${intervieweeInfo}". Here is your conversation so far: "${state.feedbackTranscript}"
+      Answer this question that the student asked: "${userQuery}". Your answer should be specific, helpful, and concise
+      and related to this specific interview. Your answer should be limited to 3 sentences. Make sure you DO NOT
+      give specific interview questions or what the student should do. Instead guide the student to getting the answer
+      themselves. Eg. instead of telling them what question is better to ask maybe ask a question about what
+      they would do to get to the same main point as the good interview question. At the end tell the student
+      what else they can ask you for help with if they are still confused (make this short and breief).
+      Still dont give away any answers.`;
   }
 
   /**
    * Builds interviewee response prompt
    */
   function buildIntervieweePrompt(userQuery, personality, intervieweeName, intervieweeInfo) {
-    return `You are ${intervieweeName}. \nHere is an some info on them: \n${state.intervieweeSummary}. \nAct like this person under whatever circumstances. \n You are currently an interviewee in an interview conducted by a high school journalist. You start off ${personality} but become better as the conversation progresses and the interviewer builds trust with you. Adapt your responses based on the conversation history here: ${state.fullTranscript}. Reply to the journalist question/comment like ${intervieweeInfo} (you may create fake details if necessary) when needed. Your answers shouldn't be longer than three paragraphs! \nHere is what the journalist says: ${userQuery}`;
+    return `You are ${intervieweeName}. \nHere is an some info on them: \n${state.intervieweeSummary}. \n
+    Act like this person under whatever circumstances. \n You are currently an interviewee
+    in an interview conducted by a high school journalist. You start off ${personality}
+    but become better as the conversation progresses and the interviewer builds trust
+     with you. Adapt your responses based on the conversation history here: ${state.fullTranscript}.
+      Reply to the journalist question/comment like ${intervieweeInfo} (you may create
+      fake details if necessary) when needed. Your answers shouldn't be longer than
+      three paragraphs! \nHere is what the journalist says: ${userQuery}`;
   }
 
   /**
@@ -926,17 +1027,50 @@ import { callOpenAI } from './openai-api.js';
       showBottomBarElements();
       return;
     }
-    elements.intervieweeAvatar.src = IMAGES.teacher;
-    // Start reflection with general feedback
-    // module-specific feedback (like cognitiveEngagement)
-    // will be available as buttons under the general feedback.
-    addReflectionAndRedoPrompt();
-    const personalityScore = await evaluateInterview();
 
-    if (personalityScore >= 7) {
-      state.personalityIndex = (state.personalityIndex + 1) % 8;
-      alert("Great job with the current personality! You may see some changes in the interviewee's personality now!");
+    // Immediately switch to the Reflection tab and show a loading placeholder
+    elements.intervieweeAvatar.src = IMAGES.teacher;
+    try {
+      // enable reflection tab if needed
+      const tabReflection = id('tab-reflection');
+      if (tabReflection) { tabReflection.disabled = false; tabReflection.style.opacity = '1'; }
+      switchToReflectionTab();
+
+      // show loading placeholder in the reflection section while feedback is generated
+      let reflectionSection = id('reflectionBlockSection');
+      if (!reflectionSection) {
+        // ensure the container exists (fall back to qaContainer if needed)
+        const reflectionContainer = id('reflectionContainer') || elements.qaContainer;
+        if (reflectionContainer) {
+          reflectionSection = id('reflectionBlockSection');
+          if (!reflectionSection) {
+            const sec = document.createElement('div');
+            sec.id = 'reflectionBlockSection';
+            reflectionContainer.appendChild(sec);
+            reflectionSection = sec;
+          }
+        }
+      }
+
+      if (reflectionSection) {
+        reflectionSection.innerHTML = '';
+        const loadingDiv = document.createElement('div');
+        loadingDiv.className = 'reflection-loading';
+        loadingDiv.innerText = 'Loading feedback...';
+        reflectionSection.appendChild(loadingDiv);
+      }
+    } catch (e) {
+      console.warn('Could not pre-show reflection loading state', e);
     }
+
+    // Start generating reflection content
+    addReflectionAndRedoPrompt();
+    // const personalityScore = await evaluateInterview();
+
+    // if (personalityScore >= 7) {
+    //   state.personalityIndex = (state.personalityIndex + 1) % 8;
+    //   alert("Great job with the current personality! You may see some changes in the interviewee's personality now!");
+    // }
   }
 
   /**
@@ -948,7 +1082,23 @@ import { callOpenAI } from './openai-api.js';
       showBottomBarElements();
 
       disableInterviewButtons();
-
+      // Show loading placeholder in reflection section when module buttons request feedback
+      try {
+        const reflectionSection = id('reflectionBlockSection') || elements.qaContainer;
+        if (reflectionSection) {
+          // Remove any existing loading nodes
+          const existing = reflectionSection.querySelector('.reflection-loading');
+          if (existing) existing.remove();
+          // If this call is from a module button (feedbackType is a function) or section is empty, show loading
+          if (typeof feedbackType === 'function' || reflectionSection.children.length === 0) {
+            reflectionSection.innerHTML = '';
+            const loadingDiv = document.createElement('div');
+            loadingDiv.className = 'reflection-loading';
+            loadingDiv.innerText = 'Loading feedback...';
+            reflectionSection.appendChild(loadingDiv);
+          }
+        }
+      } catch (e) { }
       // If a specific feedbackType (module) was provided, use it. Otherwise use the
       // general feedback module to give an overview first.
       let feedback;
@@ -966,6 +1116,18 @@ import { callOpenAI } from './openai-api.js';
       }
 
       const newReflectionPause = displayReflectionUI(feedback);
+      // enable reflection tab (first time), enable reflection Done button, and disable interview tab while in reflection mode
+      try {
+        const tabInterview = id('tab-interview');
+        const tabReflection = id('tab-reflection');
+        if (tabReflection) { tabReflection.disabled = false; tabReflection.style.opacity = '1'; }
+        if (tabInterview) { tabInterview.disabled = true; tabInterview.style.opacity = '0.7'; }
+        const reflectionDoneButton = id('reflectionDoneButton');
+        if (reflectionDoneButton) { reflectionDoneButton.disabled = false; reflectionDoneButton.style.opacity = '1'; }
+      } catch (e) { }
+
+      // switch UI to the Reflection tab so the student sees feedback immediately
+      try { switchToReflectionTab(); } catch (e) { }
 
       try {
         if (state.audio) {
@@ -1063,6 +1225,12 @@ import { callOpenAI } from './openai-api.js';
     const reflectionContainer = id('reflectionContainer');
     const reflectionSection = id('reflectionBlockSection');
 
+    // remove any loading placeholder if present
+    try {
+      const loading = reflectionSection ? reflectionSection.querySelector('.reflection-loading') : null;
+      if (loading) loading.remove();
+    } catch (e) { }
+
     if (reflectionContainer && reflectionSection) {
       const feedbackBlock = createFeedbackBlock(feedback);
       const iconContainer = createReflectionIconContainer(feedback);
@@ -1143,9 +1311,8 @@ import { callOpenAI } from './openai-api.js';
     elements.interviewContent.style.display = 'block';
     const reflectionContainer = id('reflectionContainer');
     if (reflectionContainer) {
+      // hide reflection UI but keep its contents so the student can switch back later
       reflectionContainer.style.display = 'none';
-      const section = id('reflectionBlockSection');
-      if (section) section.innerHTML = '';
     } else {
       const rDone = id('reflectionDoneButton');
       if (rDone) rDone.remove();
@@ -1154,6 +1321,16 @@ import { callOpenAI } from './openai-api.js';
     hideBottomBarElements();
 
     enableInterviewButtons();
+    // when finishing reflection, re-enable interview tab and keep reflection tab enabled
+    try {
+      const tabInterview = id('tab-interview');
+      const tabReflection = id('tab-reflection');
+      if (tabInterview) { tabInterview.disabled = false; tabInterview.style.opacity = '1'; }
+      if (tabReflection) { tabReflection.disabled = false; tabReflection.style.opacity = '1'; }
+      const reflectionDoneButton = id('reflectionDoneButton');
+      if (reflectionDoneButton) { reflectionDoneButton.disabled = true; reflectionDoneButton.style.opacity = '0.7'; }
+      try { switchToInterviewTab(); } catch (e) { }
+    } catch (e) { }
   }
 
   /**
@@ -1366,7 +1543,12 @@ Please respond with the following structured sections (use short bullet lists an
 1) Summary (1-2 sentences): a high-level judgment of cognitive engagement.
 2) Strengths (up to 3): for each, give a 1-sentence rationale and include a short supporting excerpt from the transcript.
 3) Weaknesses (up to 3): for each, give a 1-2 sentence rationale and include a short supporting excerpt from the transcript.
-4) Actionable suggestions (up to 3), prioritized by impact: for each, provide an exact example question or phrase the interviewer could use to improve cognitive engagement.
+4) Actionable suggestions (up to 3), prioritized by impact.
+
+Make sure you DO NOT
+      give SPECIFIC interview questions or what the student should do. Instead guide the student to getting the answer
+      themselves. Eg. instead of telling them what interview question is better to ask maybe ask a question about what
+      they would do to get to the same main point as the good interview question
 
 Be concise, specific, and tie every point to the transcript when possible.`;
 
@@ -1379,18 +1561,19 @@ Be concise, specific, and tie every point to the transcript when possible.`;
    * more specific feedback on demand.
    */
   async function generalFeedback(transcriptContent) {
-    const prompt = `You are an experienced journalism instructor. Given the transcript below, provide a concise, structured evaluation of the INTERVIEW as a whole aimed at helping a student improve.
+    console.log("in the method: " + state.fullTranscript);
+    const prompt = `You are an experienced journalism instructor. Given
+    the transcript below done by a student journalist, give feedback for the
+    INTERVIEWER on their overall interview performance across multiple dimensions
+    (tone, question quality, power dynamics, cultural knowledge, fact-checking, ethics/privacy).
+
+    Make sure you DO NOT
+      give SPECIFIC interview questions or what the student should do. Instead guide the student to getting the answer
+      themselves. Eg. instead of telling them what interview question is better to ask maybe ask a question about what
+      they would do to get to the same main point as the good interview question
 
 Transcript:
-${transcriptContent}
-
-Return the assessment in these sections:
-1) Brief summary (2-3 sentences) of overall performance.
-2) Top 3 strengths with a one-sentence rationale and a short supporting excerpt for each.
-3) Top 3 weaknesses with a one-sentence rationale and a short supporting excerpt for each.
-4) Three prioritized, concrete next-step recommendations (what to practice and exact example phrasings to use).
-
-Keep each item short and actionable; when suggesting phrasings, show the exact words the student can use.`;
+${transcriptContent}`;
 
     return await callClaude(prompt);
   }
@@ -1408,9 +1591,14 @@ Provide a structured response:
 1) Short summary (1-2 sentences).
 2) Examples of effective tone (up to 3) with a one-line rationale and transcript excerpt for each.
 3) Problematic phrases or tones (up to 3) with a one-line rationale and a suggested revision (exact rewrite) that keeps the intent but improves tone.
-4) Two short practice exercises the student can do to improve tone and language (include example prompts to practice).
+4) Two short practice exercises the student can do to improve tone and language.
 
-Be concrete and give exact rewrites where requested.`;
+Make sure you DO NOT
+      give specific interview questions or what the student should do. Instead guide the student to getting the answer
+      themselves. Eg. instead of telling them what question is better to ask maybe ask a question about what
+      they would do to get to the same main point as the good interview question
+
+`;
 
     return await callClaude(prompt);
   }
@@ -1428,8 +1616,12 @@ Return a structured assessment:
 1) Brief summary (1-2 sentences).
 2) Top 3 well-formulated questions from the transcript (quote them and say why they worked).
 3) Top 3 weak or missed-opportunity questions (quote them and explain how they could be improved).
-4) For each weak question, provide an exact rewritten version that is clearer/more open-ended and explain why the rewrite is better.
-5) Suggest two quick heuristics the interviewer can use to craft better questions during an interview.
+4) Suggest two quick heuristics the interviewer can use to craft better questions during an interview.
+
+Make sure you DO NOT
+      give SPECIFIC interview questions or what the student should do. Instead guide the student to getting the answer
+      themselves. Eg. instead of telling them what interview question is better to ask maybe ask a question about what
+      they would do to get to the same main point as the good interview question
 
 Be practical and include exact rewrites the student can use immediately.`;
 
@@ -1448,8 +1640,13 @@ ${transcriptContent}
 Provide a concise, structured response:
 1) Summary (1-2 sentences): overall balance assessment.
 2) Evidence of imbalance (up to 3 examples): quote the transcript excerpt and explain why it indicates imbalance (e.g., interruption, leading language, excessive framing).
-3) Concrete strategies (up to 4) the interviewer can use to rebalance power, with exact example phrasings to implement each strategy (e.g., prompts to allow longer answers, softeners, invitation phrases).
+3) Concrete strategies (up to 4) the interviewer can use to rebalance power
 4) One quick practice drill to help the interviewer notice and correct power imbalances in real time.
+
+Make sure you DO NOT
+      give SPECIFIC interview questions or what the student should do. Instead guide the student to getting the answer
+      themselves. Eg. instead of telling them what interview question is better to ask maybe ask a question about what
+      they would do to get to the same main point as the good interview question
 
 Keep recommendations actionable and include exact wording.`;
 
@@ -1468,8 +1665,12 @@ ${transcriptContent}
 Return a structured evaluation:
 1) Brief summary (1-2 sentences).
 2) Any culturally sensitive issues or missed cues (list up to 3), with a short explanation and the transcript excerpt.
-3) Suggested phrasing replacements or framing adjustments (exact rewrites) to make the interaction more culturally respectful and inclusive.
-4) Practical guidance for preparing culturally informed questions before an interview (3 short steps).
+3) Practical guidance for preparing culturally informed questions before an interview (3 short steps).
+
+Make sure you DO NOT
+      give SPECIFIC interview questions or what the student should do. Instead guide the student to getting the answer
+      themselves. Eg. instead of telling them what interview question is better to ask maybe ask a question about what
+      they would do to get to the same main point as the good interview question
 
 Be specific and provide exact language when suggesting rewrites.`;
 
@@ -1488,8 +1689,12 @@ ${transcriptContent}
 Provide a structured output:
 1) Short summary (1-2 sentences) about the interviewer’s fact-checking approach.
 2) List up to 5 statements or claims from the transcript that merit follow-up or verification (quote the claim and explain why).
-3) For each claim, provide one respectful, neutral follow-up question the interviewer could have asked to verify or clarify (exact wording).
-4) A short note on how to balance fact-checking with rapport so the interviewee doesn't feel attacked.
+3) A short note on how to balance fact-checking with rapport so the interviewee doesn't feel attacked.
+
+Make sure you DO NOT
+      give SPECIFIC interview questions or what the student should do. Instead guide the student to getting the answer
+      themselves. Eg. instead of telling them what interview question is better to ask maybe ask a question about what
+      they would do to get to the same main point as the good interview question
 
 Be precise and offer exact phrasings for quick use.`;
 
@@ -1508,8 +1713,12 @@ ${transcriptContent}
 Please return a structured response:
 1) Brief summary (1-2 sentences) of any ethical/privacy risks.
 2) Any questions or phrasing that may breach privacy or be insensitive (up to 4), with exact excerpt and a short explanation.
-3) For each problematic item, provide an ethically safer rewrite (exact wording) and guidance on when to seek consent or avoid the topic.
-4) Short checklist (3 items) the interviewer can run through before asking potentially sensitive questions (e.g., signal consent, explain purpose, offer opt-out).
+3) Short checklist (3 items) the interviewer can run through before asking potentially sensitive questions (e.g., signal consent, explain purpose, offer opt-out).
+
+Make sure you DO NOT
+      give SPECIFIC interview questions or what the student should do. Instead guide the student to getting the answer
+      themselves. Eg. instead of telling them what interview question is better to ask maybe ask a question about what
+      they would do to get to the same main point as the good interview question
 
 Be concise, practical, and provide exact phrasings the student can use.`;
 

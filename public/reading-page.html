@@ -13,6 +13,7 @@
 
 
 <body>
+    <button id="logout-btn" class="logout-button">Sign Out</button>
     <div class="container">
         <div class="sidebar">
             <img src="icons/article-icon.png" alt="Read Article" id="readArticleIcon">
@@ -48,6 +49,11 @@
         <div class="divider"></div>
         <div class="content-container">
             <div class="content">
+                <div id="tabBar" class="tab-bar" style="display:flex; gap:8px; margin-bottom:12px;">
+                    <button id="tab-interview" class="tab-button">Interview</button>
+                    <button id="tab-reflection" class="tab-button">Reflection</button>
+                </div>
+                <div id="brainstormSection">
                 <h1>Brainstorm</h1>
                 <p>Ask for help with the mic button!</p>
                 <textarea class="brainstorm-textarea"
@@ -55,6 +61,7 @@
 
                 <div id="brainstormQAContainer"></div>
                 <button class="done-button" id="doneButton">Done</button>
+                </div>
 
 
                 <div class="interview-content" id="interviewContent">

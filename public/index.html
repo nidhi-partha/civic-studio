@@ -60,6 +60,24 @@
       max-width: 80%;
       margin-bottom: 20px;
     }
+    .logout-button {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      padding: 10px 20px;
+      font-size: 16px;
+      background-color: #007BFF;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: 'Open Sans', sans-serif;
+      font-weight: 300;
+      z-index: 10000;
+    }
+    .logout-button:hover {
+      background-color: #0056b3;
+    }
   </style>
 </head>
 
@@ -68,13 +86,22 @@
   <p>Input an article of your choice</p>
   <textarea id="article-input" placeholder="Paste your article here..."></textarea>
   <button id="next-btn">Next</button>
+  <button id="logout-btn" class="logout-button">Sign Out</button>
 
   <script type="module">
+    import { auth, onAuthStateChanged, signOut } from './firebase-init.js';
     import { callClaude } from './claude-api.js';
     import { callOpenAI } from './openai-api.js';
 
     const textarea = document.getElementById('article-input');
     const nextBtn  = document.getElementById('next-btn');
+
+    // make sure user is logged in
+    onAuthStateChanged(auth, (user) => {
+      if (!user) {
+        window.location.href = 'login.html';
+      }
+    });
 
     function buildPrompt(articleText) {
       return `Identify the main interviewees (max 3) in the following article:
@@ -149,6 +176,19 @@ name:description`;
         nextBtn.textContent = 'Next';
       }
     }
+
+    const logoutBtn = document.getElementById('logout-btn');
+
+    logoutBtn.addEventListener('click', async () => {
+      try {
+        await signOut(auth);
+        window.location.replace('login.html');
+      } catch (err) {
+        console.error(err);
+        alert("Failed to sign out. Check console.");
+      }
+    });
+
 
     nextBtn.addEventListener('click', processArticle);
   </script>

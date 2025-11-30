@@ -105,20 +105,102 @@
             border-color: #007BFF;
             background-color: #f0f8ff;
         }
+
+        .logout-button {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: 'Open Sans', sans-serif;
+            font-weight: 300;
+            z-index: 10000;
+        }
+
+        .logout-button:hover {
+            background-color: #0056b3;
+        }
+
+        .personality-section {
+            margin-top: 20px;
+            margin-bottom: 20px;
+            padding: 20px;
+            background-color: white;
+            border-radius: 10px;
+            border: 1px solid #ccc;
+            width: 100%;
+        }
+
+        .personality-section h2 {
+            font-size: 20px;
+            margin-top: 0;
+            margin-bottom: 15px;
+        }
+
+        .personality-options {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .personality-option {
+            display: flex;
+            align-items: flex-start;
+            padding: 10px;
+            border: 2px solid #ccc;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .personality-option:hover {
+            background-color: #f0f8ff;
+            border-color: #007BFF;
+        }
+
+        .personality-option.selected {
+            background-color: #e6f2ff;
+            border-color: #007BFF;
+        }
+
+        .personality-option input[type="radio"] {
+            margin-right: 10px;
+            margin-top: 2px;
+            cursor: pointer;
+        }
+
+        .personality-option label {
+            cursor: pointer;
+            font-size: 16px;
+            flex: 1;
+        }
     </style>
 </head>
 
 <body>
+    <button id="logout-btn" class="logout-button">Sign Out</button>
     <div class="main-container">
         <h1>Identified Interviewees</h1>
         <p class="instructions">Choose an interviewee</p>
         <div class="interviewee-container" id="interviewee-list"></div>
+        
+        <div class="personality-section" id="personality-section" style="display: none;">
+            <h2>Select Interviewee Personality</h2>
+            <div class="personality-options" id="personality-options"></div>
+        </div>
+        
         <button id="next-btn">Next</button>
     </div>
 
     <script type="module">
         import { callClaude } from './claude-api.js';
         import { callOpenAI } from './openai-api.js';
+        import { auth, signOut } from './firebase-init.js';
 
         let img = '';
         document.addEventListener('DOMContentLoaded', async (event) => {
@@ -162,10 +244,36 @@
                 alert('Failed to load interviewees. Please try again.');
             }
             document.getElementById("next-btn").addEventListener("click", goToReadingPage);
+
+            // Sign out button
+            const logoutBtn = document.getElementById('logout-btn');
+            if (logoutBtn) {
+                logoutBtn.addEventListener('click', async () => {
+                    try {
+                        await signOut(auth);
+                        window.location.replace('login.html');
+                    } catch (err) {
+                        console.error(err);
+                        alert('Failed to sign out. Check console.');
+                    }
+                });
+            }
         });
 
         let selectedInterviewee = '';
+        let selectedPersonalityIndex = null;
         let genders = {};
+
+        const PERSONALITIES = [
+            'Long-winded answers that are off topic',
+            'Skeptical of the interviewer and don\'t let go of too much info',
+            'Avoiding the questions and redirecting them to something else you want to talk about',
+            'Getting defensive when you have hard questions or questions you do not want to answer',
+            'Giving vague answers that the interviewer can\'t get much out of',
+            'Repeating the same points over and over',
+            'Controlled messaging - trying to get a certain rehearsed message out',
+            'Positive/negative bias towards your subject providing a skewed opinion'
+        ];
 
         async function getGenderImage(name, guyIndex, girlIndex) {
             const prompt = `Is the name "${name}" typically associated with a male or female? Respond with "male" or "female".`;
@@ -198,6 +306,47 @@
             localStorage.setItem('selectedInterviewee', interviewee);
             localStorage.setItem('intervieweeName', name);
             localStorage.setItem('selectedIntervieweeImage', imgSrc);
+
+            // Show personality selector
+            showPersonalitySelector();
+        }
+
+        function showPersonalitySelector() {
+            const personalitySection = document.getElementById('personality-section');
+            const personalityOptions = document.getElementById('personality-options');
+            
+            personalitySection.style.display = 'block';
+            personalityOptions.innerHTML = '';
+
+            PERSONALITIES.forEach((personality, index) => {
+                const optionDiv = document.createElement('div');
+                optionDiv.className = 'personality-option';
+                optionDiv.innerHTML = `
+                    <input type="radio" name="personality" id="personality-${index}" value="${index}">
+                    <label for="personality-${index}">${personality}</label>
+                `;
+                optionDiv.addEventListener('click', () => selectPersonality(index, optionDiv));
+                personalityOptions.appendChild(optionDiv);
+            });
+
+            // Set default to index 2 if nothing selected
+            if (selectedPersonalityIndex === null) {
+                const defaultOption = personalityOptions.children[2];
+                if (defaultOption) {
+                    selectPersonality(2, defaultOption);
+                }
+            }
+        }
+
+        function selectPersonality(index, optionDiv) {
+            document.querySelectorAll('.personality-option').forEach((element) => {
+                element.classList.remove('selected');
+            });
+
+            optionDiv.classList.add('selected');
+            const radio = optionDiv.querySelector('input[type="radio"]');
+            radio.checked = true;
+            selectedPersonalityIndex = index;
         }
 
         function saveInfo() {
@@ -218,6 +367,10 @@
                 alert('Please select an interviewee.');
                 return;
             }
+            if (selectedPersonalityIndex === null) {
+                alert('Please select a personality for the interviewee.');
+                return;
+            }
             try {
                 saveInfo();
             } catch (error) {
@@ -227,6 +380,8 @@
                 saveInfo();
             }
 
+            // Save selected personality
+            localStorage.setItem('selectedPersonalityIndex', selectedPersonalityIndex.toString());
 
             window.location.href = 'reading-page.html';
         }
