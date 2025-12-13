@@ -17,7 +17,13 @@ import {
   getFirestore,
   doc,
   getDoc,
-  setDoc
+  setDoc,
+  updateDoc,
+  serverTimestamp,
+  collection,
+  getDocs,
+  query,
+  orderBy
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
 // (Optional) analytics – only if you care about it
@@ -36,5 +42,11 @@ export {
   signOut,
   doc,
   getDoc,
-  setDoc
+  setDoc,
+  updateDoc,
+  serverTimestamp,
+  collection,
+  getDocs,
+  query,
+  orderBy
 };

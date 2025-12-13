@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Interview Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;700&display=swap" />
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: 'Open Sans', sans-serif;
+      background-color: #E8F1FC;
+      margin: 0;
+      padding: 20px;
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 30px;
+    }
+    h1 {
+      margin: 0;
+      font-weight: 700;
+      color: #333;
+    }
+    .new-interview-btn {
+      background-color: #007BFF;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      font-size: 16px;
+      cursor: pointer;
+      font-family: 'Open Sans', sans-serif;
+      font-weight: 300;
+    }
+    .new-interview-btn:hover {
+      background-color: #0056b3;
+    }
+    .interviews-section {
+      margin-top: 30px;
+    }
+    .section-title {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      color: #333;
+    }
+    .interviews-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 20px;
+    }
+    .interview-card {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .interview-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    .interview-name {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 10px;
+      color: #333;
+    }
+    .interview-meta {
+      font-size: 14px;
+      color: #666;
+      margin-bottom: 5px;
+    }
+    .interview-date {
+      font-size: 12px;
+      color: #999;
+      margin-top: 10px;
+    }
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #666;
+    }
+    .empty-state p {
+      font-size: 18px;
+      margin-bottom: 20px;
+    }
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #666;
+    }
+    .profile-menu {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+    }
+    .profile-button {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 8px;
+      width: 40px;
+      height: 40px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 4px;
+    }
+    .profile-button .menu-icon-bar {
+      width: 24px;
+      height: 3px;
+      background-color: #333;
+      border-radius: 2px;
+      transition: all 0.3s;
+    }
+    .profile-button:hover .menu-icon-bar {
+      background-color: #007BFF;
+    }
+    .profile-dropdown {
+      display: none;
+      position: absolute;
+      top: 50px;
+      right: 0;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      min-width: 150px;
+      z-index: 1000;
+    }
+    .profile-dropdown.show {
+      display: block;
+    }
+    .profile-dropdown-item {
+      padding: 12px 20px;
+      cursor: pointer;
+      font-size: 14px;
+      color: #333;
+    }
+    .profile-dropdown-item:hover {
+      background-color: #f5f5f5;
+    }
+    .sign-out {
+      color: #dc3545;
+    }
+  </style>
+</head>
+<body>
+  <div class="profile-menu">
+    <button id="profile-btn" class="profile-button">
+      <span class="menu-icon-bar"></span>
+      <span class="menu-icon-bar"></span>
+      <span class="menu-icon-bar"></span>
+    </button>
+    <div id="profile-dropdown" class="profile-dropdown">
+      <div class="profile-dropdown-item dashboard" id="dashboard-item">Dashboard</div>
+      <div class="profile-dropdown-item sign-out" id="sign-out-item">Sign Out</div>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="header">
+      <h1>My Interviews</h1>
+      <button class="new-interview-btn" id="new-interview-btn">+ New Interview</button>
+    </div>
+
+    <div class="interviews-section">
+      <h2 class="section-title">Past Interviews</h2>
+      <div id="interviews-container">
+        <div class="loading">Loading interviews...</div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import {
+      auth,
+      onAuthStateChanged,
+      signOut,
+      db,
+      collection,
+      getDocs,
+      query,
+      orderBy
+    } from './firebase-init.js';
+
+    let currentUser = null;
+
+    // Check authentication
+    onAuthStateChanged(auth, (user) => {
+      if (!user) {
+        window.location.href = 'login.html';
+        return;
+      }
+      currentUser = user;
+      loadInterviews();
+    });
+
+    // Load all interviews for the current user
+    async function loadInterviews() {
+      const container = document.getElementById('interviews-container');
+      
+      try {
+        const interviewsRef = collection(db, 'users', currentUser.uid, 'interviews');
+        const q = query(interviewsRef, orderBy('updatedAt', 'desc'));
+        const snapshot = await getDocs(q);
+
+        if (snapshot.empty) {
+          container.innerHTML = `
+            <div class="empty-state">
+              <p>No interviews yet.</p>
+              <p>Click "New Interview" to get started!</p>
+            </div>
+          `;
+          return;
+        }
+
+        const interviews = [];
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          interviews.push({
+            id: doc.id,
+            name: data.intervieweeName || doc.id,
+            intervieweeInfo: data.intervieweeInfo || '',
+            updatedAt: data.updatedAt?.toDate?.() || new Date(),
+            createdAt: data.createdAt?.toDate?.() || new Date()
+          });
+        });
+
+        // Render interviews
+        container.innerHTML = '';
+        if (interviews.length === 0) {
+          container.innerHTML = `
+            <div class="empty-state">
+              <p>No interviews yet.</p>
+              <p>Click "New Interview" to get started!</p>
+            </div>
+          `;
+        } else {
+          const grid = document.createElement('div');
+          grid.className = 'interviews-grid';
+          
+          interviews.forEach((interview) => {
+            const card = document.createElement('div');
+            card.className = 'interview-card';
+            card.addEventListener('click', () => {
+              window.location.href = `reading-page.html?interviewId=${encodeURIComponent(interview.id)}`;
+            });
+
+            const name = document.createElement('div');
+            name.className = 'interview-name';
+            name.textContent = interview.name;
+
+            const meta = document.createElement('div');
+            meta.className = 'interview-meta';
+            if (interview.intervieweeInfo) {
+              const infoPreview = interview.intervieweeInfo.length > 100 
+                ? interview.intervieweeInfo.substring(0, 100) + '...'
+                : interview.intervieweeInfo;
+              meta.textContent = infoPreview;
+            }
+
+            const date = document.createElement('div');
+            date.className = 'interview-date';
+            date.textContent = `Last updated: ${interview.updatedAt.toLocaleDateString()} ${interview.updatedAt.toLocaleTimeString()}`;
+
+            card.appendChild(name);
+            if (interview.intervieweeInfo) {
+              card.appendChild(meta);
+            }
+            card.appendChild(date);
+            grid.appendChild(card);
+          });
+
+          container.appendChild(grid);
+        }
+      } catch (error) {
+        console.error('Error loading interviews:', error);
+        container.innerHTML = `
+          <div class="empty-state">
+            <p>Error loading interviews. Please try again.</p>
+          </div>
+        `;
+      }
+    }
+
+    // New interview button
+    document.getElementById('new-interview-btn').addEventListener('click', () => {
+      window.location.href = 'index.html';
+    });
+
+    // Profile menu dropdown functionality
+    const profileBtn = document.getElementById('profile-btn');
+    const profileDropdown = document.getElementById('profile-dropdown');
+    const dashboardItem = document.getElementById('dashboard-item');
+    const signOutItem = document.getElementById('sign-out-item');
+
+    // Toggle dropdown on profile button click
+    if (profileBtn) {
+      profileBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        profileDropdown.classList.toggle('show');
+      });
+    }
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+      if (profileBtn && profileDropdown && !profileBtn.contains(e.target) && !profileDropdown.contains(e.target)) {
+        profileDropdown.classList.remove('show');
+      }
+    });
+
+    // Handle dashboard navigation
+    if (dashboardItem) {
+      dashboardItem.addEventListener('click', () => {
+        window.location.href = 'dashboard.html';
+      });
+    }
+
+    // Handle sign out
+    if (signOutItem) {
+      signOutItem.addEventListener('click', async () => {
+        try {
+          await signOut(auth);
+          window.location.replace('login.html');
+        } catch (err) {
+          console.error(err);
+          alert('Failed to sign out. Check console.');
+        }
+      });
+    }
+  </script>
+</body>
+</html>
+

@@ -4,12 +4,21 @@
 
 import { callClaude } from './claude-api.js';
 import { callGemini } from './gemini-api.js';
-import { auth, signOut } from './firebase-init.js';
+import {
+  auth, signOut, db,
+  onAuthStateChanged,
+  doc, getDoc, setDoc, updateDoc, serverTimestamp
+} from './firebase-init.js';
 import { callOpenAI } from './openai-api.js';
 
 "use strict";
 
 (function () {
+  let currentUser = null;
+  // Get interviewId from URL parameter, or use default
+  const urlParams = new URLSearchParams(window.location.search);
+  let interviewId = urlParams.get('interviewId') || null;
+  let saveTimer = null;
 
   // --- State Management ---
   let state = {
@@ -20,6 +29,7 @@ import { callOpenAI } from './openai-api.js';
     feedbackTranscript: [], // temporary variable for reflection/brainstorm transcript
     reflectionTranscript: [],
     brainstormTranscript: [],
+    unansweredQuestions: [], // list of questions that haven't been answered yet
     personalityIndex: 2,
     currentElementIndex: 0,
     contentElements: null, // temporary variable used for article reading
@@ -69,9 +79,268 @@ import { callOpenAI } from './openai-api.js';
     initializeModuleFunctions();
     setupEventListeners();
     loadStoredData();
+    // setupUI();
+    // try { switchToInterviewTab(); } catch (e) { }
+    onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        window.location.replace('login.html');
+        return;
+      }
+      currentUser = user;
+  
+      // 1) load remote saved state (if any)
+      await loadStateFromFirestore();
+  
+      // 2) now build UI from state
     setupUI();
-    // set default tab to Interview (static tabs are now in HTML)
-    try { switchToInterviewTab(); } catch (e) { }
+
+      applyModeUIFromState();
+
+      rebuildAllBlocksFromState();
+  
+      try { switchToInterviewTab(); } catch (e) {}
+    });
+
+    if (elements.brainstormTextarea) {
+      elements.brainstormTextarea.addEventListener('input', scheduleSave);
+    }
+    window.addEventListener('beforeunload', () => {
+      try { saveStateToFirestore(); } catch (e) {}
+    });
+  }
+
+  function applyModeUIFromState() {
+    // brainstorm mode
+    if (state.inBrainstormMode) {
+      // show brainstorm textarea big + show done button
+      if (elements.brainstormTextarea) elements.brainstormTextarea.classList.add('expanded');
+      if (elements.doneButton) elements.doneButton.style.display = 'inline-block';
+  
+      // hide interview content until startInterview happens
+      if (elements.interviewContent) elements.interviewContent.style.display = 'none';
+      
+      // Show mic button and help icon in brainstorm mode
+      if (elements.micButton) elements.micButton.style.display = 'flex';
+      const questionTipsIcon = id('questionTipsIcon');
+      const questionTipsButton = id('questionTipsButton');
+      if (questionTipsIcon) questionTipsIcon.style.display = 'block';
+      if (questionTipsButton) questionTipsButton.style.display = 'block';
+      
+      return;
+    }
+  
+    // interview mode (brainstorm is done)
+    if (elements.brainstormTextarea) elements.brainstormTextarea.classList.remove('expanded');
+    if (elements.doneButton) elements.doneButton.style.display = 'none';
+    if (elements.interviewContent) elements.interviewContent.style.display = 'block';
+    
+    // Hide mic button and help icon in interview mode (only show in brainstorm/reflect mode)
+    if (elements.micButton) elements.micButton.style.display = 'none';
+    const questionTipsIcon = id('questionTipsIcon');
+    const questionTipsButton = id('questionTipsButton');
+    if (questionTipsIcon) questionTipsIcon.style.display = 'none';
+    if (questionTipsButton) questionTipsButton.style.display = 'none';
+    
+    // Enable reflection tab when in interview mode
+    const tabReflection = id('tab-reflection');
+    if (tabReflection) {
+      tabReflection.disabled = false;
+      tabReflection.style.opacity = '1';
+    }
+  }
+  
+
+  function rebuildAllBlocksFromState() {
+    // Interview Q/A blocks - rebuild answered questions first, then unanswered
+    rebuildInterviewBlocks();
+  
+    // Brainstorm Q/A blocks (if you want them visible)
+    if (elements.brainstormQAContainer && Array.isArray(state.brainstormTranscript) && state.brainstormTranscript.length > 0) {
+      renderTranscriptBlocks(elements.brainstormQAContainer, state.brainstormTranscript, 'brainstorm');
+    }
+  
+    // Reflection Q/A blocks - always populate if there's any reflection transcript
+    const reflectionSection = id('reflectionBlockSection');
+    if (reflectionSection && Array.isArray(state.reflectionTranscript) && state.reflectionTranscript.length > 0) {
+      renderTranscriptBlocks(reflectionSection, state.reflectionTranscript, 'reflection');
+    }
+  }
+
+  /**
+   * Rebuilds interview blocks: answered questions first, then unanswered questions
+   */
+  function rebuildInterviewBlocks() {
+    if (!elements.qaContainer) return;
+    
+    elements.qaContainer.innerHTML = ''; // clear old DOM
+    
+    // First, render all answered questions from transcript
+    const answeredPairs = transcriptToPairs(state.fullTranscript);
+    answeredPairs.forEach((pair, pairIdx) => {
+      const { qaBlock, questionElement, answerElement } = createQAblock(pair.q, elements.qaContainer);
+      
+      // Fill in saved content
+      questionElement.innerText = `Q: ${pair.q}`;
+      answerElement.innerText = `A: ${pair.a}`;
+      
+      // Store original question in dataset (createQAblock already does this, but ensure it's set)
+      qaBlock.dataset.originalQuestion = pair.q.trim();
+      
+      // Mark transcript mapping (2 strings per pair)
+      const txIndex = pairIdx * 2;
+      qaBlock.dataset.txMode = 'interview';
+      qaBlock.dataset.txIndex = String(txIndex);
+      
+      // Prevent auto "click-to-record" on restored blocks
+      qaBlock.dataset.frozen = 'true';
+      qaBlock.classList.add('clicked');
+      qaBlock.style.backgroundColor = '#edf2f7';
+    });
+    
+    // Then, render unanswered questions in their original order
+    if (Array.isArray(state.unansweredQuestions) && state.unansweredQuestions.length > 0) {
+      // Get list of answered questions to filter them out
+      const answeredQuestions = answeredPairs.map(pair => pair.q.trim());
+      
+      // Filter out questions that have been answered
+      const unanswered = state.unansweredQuestions.filter(q => {
+        const qTrimmed = q.trim();
+        return !answeredQuestions.some(aq => aq === qTrimmed || aq.replace(/^Q:\s*/i, '').trim() === qTrimmed);
+      });
+      
+      // Create blocks for unanswered questions
+      unanswered.forEach((question) => {
+        createQAblock(question, elements.qaContainer);
+      });
+    }
+  }  
+
+  async function loadStateFromFirestore() {
+    if (!currentUser) return; // Safety check
+    if (!interviewId) {
+      // If no interviewId, this is a new interview - don't try to load
+      return;
+    }
+    try {
+      const ref = interviewDocRef(currentUser.uid);
+      const snap = await getDoc(ref);
+  
+      if (!snap.exists()) {
+        // If document doesn't exist, this might be a new interview
+        // Try to load from localStorage as fallback
+        return;
+      }
+  
+      const data = snap.data();
+      const s = data.readingPageState;
+      if (!s) return;
+  
+      // Restore your state fields (only the ones you care about right now)
+      state.inBrainstormMode = !!s.inBrainstormMode;
+      state.inReflectionMode = !!s.inReflectionMode;
+      state.fullTranscript = Array.isArray(s.fullTranscript) ? s.fullTranscript : [];
+      state.brainstormTranscript = Array.isArray(s.brainstormTranscript) ? s.brainstormTranscript : [];
+      state.reflectionTranscript = Array.isArray(s.reflectionTranscript) ? s.reflectionTranscript : [];
+      state.unansweredQuestions = Array.isArray(s.unansweredQuestions) ? s.unansweredQuestions : [];
+      
+      // Restore state.data if it was saved
+      if (data.intervieweeName || data.intervieweeInfo || data.intervieweeImage) {
+        state.data = {
+          articleText: data.articleText || '',
+          topicText: data.topicText || '',
+          inputMode: data.inputMode || 'article',
+          intervieweeInfo: data.intervieweeInfo || '',
+          intervieweeName: data.intervieweeName || '',
+          intervieweeGender: data.intervieweeGender || '',
+          intervieweeImage: data.intervieweeImage || ''
+        };
+      }
+      
+      // Restore personality index if saved
+      if (typeof data.selectedPersonalityIndex === 'number') {
+        state.personalityIndex = data.selectedPersonalityIndex;
+      }
+  
+      // Restore brainstorm textarea content
+      if (elements.brainstormTextarea && typeof s.brainstormTextarea === 'string') {
+        elements.brainstormTextarea.value = s.brainstormTextarea;
+      }
+  
+      // OPTIONAL: restore which tab was open last
+      if (s.currentTab === 'reflection') {
+        try { switchToReflectionTab(); } catch (e) {}
+      } else {
+        try { switchToInterviewTab(); } catch (e) {}
+      }
+  
+      // NOTE: rebuilding the Q/A DOM blocks from transcripts is extra.
+      // For milestone 1 (don’t lose data), restoring transcripts + textarea is enough.
+    } catch (err) {
+      console.error('Failed to load state from Firestore:', err);
+    }
+  }
+
+  function buildSavePayload() {
+    return {
+      updatedAt: serverTimestamp(),
+      intervieweeName: state.data?.intervieweeName || '',
+      intervieweeInfo: state.data?.intervieweeInfo || '',
+      intervieweeImage: state.data?.intervieweeImage || '',
+      intervieweeGender: state.data?.intervieweeGender || '',
+      articleText: state.data?.articleText || '',
+      topicText: state.data?.topicText || '',
+      inputMode: state.data?.inputMode || 'article',
+      selectedPersonalityIndex: state.personalityIndex ?? 2,
+  
+      readingPageState: {
+        inBrainstormMode: !!state.inBrainstormMode,
+        inReflectionMode: !!state.inReflectionMode,
+        brainstormTextarea: elements.brainstormTextarea ? elements.brainstormTextarea.value : '',
+        fullTranscript: state.fullTranscript || [],
+        brainstormTranscript: state.brainstormTranscript || [],
+        reflectionTranscript: state.reflectionTranscript || [],
+        unansweredQuestions: state.unansweredQuestions || [],
+        currentTab: (id('reflectionContainer') && id('reflectionContainer').style.display !== 'none')
+          ? 'reflection'
+          : 'interview'
+      }
+    };
+  }
+  
+  async function saveStateToFirestore() {
+    if (!currentUser) return;
+    if (!interviewId) {
+      // If no interviewId yet, don't save (will be set when interviewee is selected)
+      return;
+    }
+    try {
+      const ref = interviewDocRef(currentUser.uid);
+  
+      // only set createdAt once
+      const snap = await getDoc(ref);
+      const base = snap.exists() ? {} : { createdAt: serverTimestamp() };
+  
+      await setDoc(ref, {
+        ...base,
+        ...buildSavePayload(),
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+  
+    } catch (err) {
+      console.error('Failed to save state:', err);
+    }
+  }   
+
+  function interviewDocRef(uid) {
+    return doc(db, 'users', uid, 'interviews', interviewId);
+  }
+
+  function scheduleSave() {
+    // debounce to avoid spamming Firestore on every keystroke/click
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveStateToFirestore();
+    }, 800);
   }
 
   function switchToInterviewTab() {
@@ -102,6 +371,17 @@ import { callOpenAI } from './openai-api.js';
     try {
       if (elements.brainstormSection) elements.brainstormSection.style.display = 'none';
     } catch (e) { }
+    
+    // Ensure reflection transcript blocks are rendered when switching to reflection tab
+    const reflectionSection = id('reflectionBlockSection');
+    if (reflectionSection && Array.isArray(state.reflectionTranscript) && state.reflectionTranscript.length > 0) {
+      // Only render if not already rendered (check if section has children that aren't loading placeholders)
+      const hasContent = reflectionSection.children.length > 0 && 
+                         !reflectionSection.querySelector('.reflection-loading');
+      if (!hasContent) {
+        renderTranscriptBlocks(reflectionSection, state.reflectionTranscript, 'reflection');
+      }
+    }
   }
 
   /**
@@ -149,27 +429,37 @@ import { callOpenAI } from './openai-api.js';
    * Sets up all event listeners
    */
   function setupEventListeners() {
-    elements.doneButton.addEventListener('click', handleDoneButton);
-    elements.micButton.addEventListener('click', handleMicClick);
-    elements.pauseReflectButton.addEventListener('click', handlePauseReflect);
-    elements.playButton.addEventListener("click", togglePlayPause);
-    elements.divider.addEventListener("mousedown", () => state.isDragging = true);
+    if (elements.doneButton) elements.doneButton.addEventListener('click', handleDoneButton);
+    if (elements.micButton) elements.micButton.addEventListener('click', handleMicClick);
+    if (elements.pauseReflectButton) elements.pauseReflectButton.addEventListener('click', handlePauseReflect);
+    if (elements.playButton) elements.playButton.addEventListener("click", togglePlayPause);
+    if (elements.divider) elements.divider.addEventListener("mousedown", () => state.isDragging = true);
 
     document.addEventListener("mousemove", handleDividerDrag);
     document.addEventListener("mouseup", () => state.isDragging = false);
 
-    id("readArticleIcon").addEventListener("click", displayArticleText);
-    id("readArticleButton").addEventListener("click", displayArticleText);
-    id("intervieweeIcon").addEventListener("click", displayIntervieweeInfo);
-    id("intervieweeButton").addEventListener("click", displayIntervieweeInfo);
-    id("questionTipsIcon").addEventListener("click", displayQuestionTips);
-    id("questionTipsButton").addEventListener("click", displayQuestionTips);
-    id("newIntervieweeButton").addEventListener('click', handleNewInterviewee);
-    id("createBlogButton").addEventListener('click', handleCreateBlog);
+    const readArticleIcon = id("readArticleIcon");
+    const readArticleButton = id("readArticleButton");
+    const intervieweeIcon = id("intervieweeIcon");
+    const intervieweeButton = id("intervieweeButton");
+    const questionTipsIcon = id("questionTipsIcon");
+    const questionTipsButton = id("questionTipsButton");
+    const newIntervieweeButton = id("newIntervieweeButton");
+    const createBlogButton = id("createBlogButton");
+    
+    if (readArticleIcon) readArticleIcon.addEventListener("click", displayArticleText);
+    if (readArticleButton) readArticleButton.addEventListener("click", displayArticleText);
+    if (intervieweeIcon) intervieweeIcon.addEventListener("click", displayIntervieweeInfo);
+    if (intervieweeButton) intervieweeButton.addEventListener("click", displayIntervieweeInfo);
+    if (questionTipsIcon) questionTipsIcon.addEventListener("click", displayQuestionTips);
+    if (questionTipsButton) questionTipsButton.addEventListener("click", displayQuestionTips);
+    if (newIntervieweeButton) newIntervieweeButton.addEventListener('click', handleNewInterviewee);
+    if (createBlogButton) createBlogButton.addEventListener('click', handleCreateBlog);
 
     // Profile menu dropdown functionality
     const profileBtn = id('profile-btn');
     const profileDropdown = id('profile-dropdown');
+    const dashboardItem = id('dashboard-item');
     const signOutItem = id('sign-out-item');
 
     // Toggle dropdown on profile button click
@@ -186,6 +476,13 @@ import { callOpenAI } from './openai-api.js';
         profileDropdown.classList.remove('show');
       }
     });
+
+    // Handle dashboard navigation
+    if (dashboardItem) {
+      dashboardItem.addEventListener('click', () => {
+        window.location.href = 'dashboard.html';
+      });
+    }
 
     // Handle sign out
     if (signOutItem) {
@@ -260,6 +557,14 @@ import { callOpenAI } from './openai-api.js';
    * Loads data from localStorage
    */
   function loadStoredData() {
+    // If interviewId is not set from URL, try to get it from localStorage or generate new one
+    if (!interviewId) {
+      const storedInterviewId = localStorage.getItem('currentInterviewId');
+      if (storedInterviewId) {
+        interviewId = storedInterviewId;
+      }
+    }
+    
     const articleText = localStorage.getItem('articleText');
     const topicText = localStorage.getItem('topicText') || '';
     const inputMode = localStorage.getItem('inputMode') || (articleText ? 'article' : 'topic');
@@ -268,6 +573,12 @@ import { callOpenAI } from './openai-api.js';
     const intervieweeGender = localStorage.getItem('intervieweeGender');
     const intervieweeImage = localStorage.getItem('selectedIntervieweeImage');
     const selectedPersonalityIndex = localStorage.getItem('selectedPersonalityIndex');
+    
+    // If we have an intervieweeName and no interviewId yet, set it
+    if (intervieweeName && !interviewId) {
+      interviewId = intervieweeName;
+      localStorage.setItem('currentInterviewId', interviewId);
+    }
 
     state.data = {
       articleText,
@@ -296,6 +607,23 @@ import { callOpenAI } from './openai-api.js';
    * Sets up initial UI state
    */
   function setupUI() {
+    // Ensure state.data exists before accessing it
+    if (!state.data) {
+      // If state.data doesn't exist, try to load from localStorage
+      loadStoredData();
+    }
+    if (!state.data) {
+      // If still doesn't exist, initialize with defaults
+      state.data = {
+        articleText: '',
+        topicText: '',
+        inputMode: 'article',
+        intervieweeInfo: '',
+        intervieweeName: '',
+        intervieweeGender: '',
+        intervieweeImage: ''
+      };
+    }
     const { intervieweeImage, inputMode } = state.data;
     const defaultImage = 'icons/default-avatar.png';
     const hasArticle = state.data.articleText && inputMode !== 'topic';
@@ -337,6 +665,14 @@ import { callOpenAI } from './openai-api.js';
       return;
     }
 
+    // Ensure state.data exists
+    if (!state.data) {
+      loadStoredData();
+    }
+    if (!state.data) {
+      alert("Error: Interview data not found. Please restart the interview.");
+      return;
+    }
     const { intervieweeName, articleText, topicText, inputMode } = state.data;
     const summaryPrompt = (inputMode === 'article' && articleText)
       ? `Can you create a summary of the responses and characteristics of ${intervieweeName} from this article: ${articleText}`
@@ -349,17 +685,25 @@ import { callOpenAI } from './openai-api.js';
     if (questions.length > 0) {
       state.inBrainstormMode = false;
 
+      // Save the list of all questions (they start as unanswered)
+      state.unansweredQuestions = [...questions];
+
       questions.forEach((question) => {
         createQAblock(question, elements.qaContainer);
       });
       displayIntervieweeInfo();
+      if (state.data && state.data.intervieweeImage) {
       elements.intervieweeAvatar.src = state.data.intervieweeImage;
+      }
       elements.interviewContent.style.display = 'block';
       elements.doneButton.style.display = 'none';
       elements.brainstormTextarea.classList.remove('expanded');
     } else {
       alert("No valid questions found. Please try again.");
     }
+    state.inBrainstormMode = false;
+    applyModeUIFromState();
+    scheduleSave();
   }
 
   /**
@@ -367,6 +711,50 @@ import { callOpenAI } from './openai-api.js';
    */
   async function identifyQuestions(brainstormText) {
     return brainstormText.split("\n").filter(line => line.trim().endsWith("?"));
+  }
+
+  function transcriptToPairs(txArr) {
+    const pairs = [];
+    if (!Array.isArray(txArr)) return pairs;
+  
+    for (let i = 0; i < txArr.length; i += 2) {
+      const qRaw = txArr[i] || '';
+      const aRaw = txArr[i + 1] || '';
+  
+      const q = String(qRaw).replace(/^Q:\s*/i, '').trim();
+      const a = String(aRaw).replace(/^A:\s*/i, '').trim();
+  
+      // skip empty
+      if (!q && !a) continue;
+  
+      pairs.push({ q, a });
+    }
+    return pairs;
+  }
+
+  function renderTranscriptBlocks(container, transcriptArray, mode) {
+    if (!container) return;
+  
+    container.innerHTML = ''; // clear old DOM
+    const pairs = transcriptToPairs(transcriptArray);
+  
+    pairs.forEach((pair, pairIdx) => {
+      const { qaBlock, questionElement, answerElement } = createQAblock(pair.q, container);
+  
+      // Fill in saved content
+      questionElement.innerText = `Q: ${pair.q}`;
+      answerElement.innerText = `A: ${pair.a}`;
+  
+      // Mark transcript mapping (2 strings per pair)
+      const txIndex = pairIdx * 2;
+      qaBlock.dataset.txMode = mode;
+      qaBlock.dataset.txIndex = String(txIndex);
+  
+      // Prevent auto “click-to-record” on restored blocks
+      qaBlock.dataset.frozen = 'true';
+      qaBlock.classList.add('clicked');
+      qaBlock.style.backgroundColor = '#edf2f7';
+    });
   }
 
   /**
@@ -381,6 +769,8 @@ import { callOpenAI } from './openai-api.js';
 
     const questionElement = document.createElement('h4');
     questionElement.innerText = `Q: ${question}`;
+    // Store the original question text in the block's dataset for later matching
+    qaBlock.dataset.originalQuestion = question.trim();
     qaBlock.appendChild(questionElement);
 
     const answerElement = document.createElement('p');
@@ -389,6 +779,7 @@ import { callOpenAI } from './openai-api.js';
 
     let firstClick = false;
     qaBlock.addEventListener('click', async () => {
+      if (qaBlock.dataset.frozen === 'true') return;
       // disabled in brainstorm and reflection mode and after firstClick
       if (firstClick || state.inBrainstormMode || state.inReflectionMode) return;
       firstClick = true;
@@ -416,6 +807,8 @@ import { callOpenAI } from './openai-api.js';
     container.appendChild(additionalQuestionsDiv);
 
     setupQABlockListeners(iconContainer, notesDiv, additionalQuestionsDiv, answerElement, questionElement, qaBlock);
+
+    return { qaBlock, questionElement, answerElement };
   }
 
   /**
@@ -507,6 +900,7 @@ import { callOpenAI } from './openai-api.js';
       }
     });
     followUpButton.remove();
+    scheduleSave();
   }
 
   /**
@@ -640,6 +1034,7 @@ import { callOpenAI } from './openai-api.js';
             // ensure loading flag cleared even if no _audio
             img.dataset.loading = 'false';
           }
+          scheduleSave();
         } catch (e) { }
       });
     } catch (e) { }
@@ -687,6 +1082,18 @@ import { callOpenAI } from './openai-api.js';
     const personality = PERSONALITIES[state.personalityIndex];
 
     try {
+      // Ensure state.data exists, if not initialize with defaults
+      if (!state.data) {
+        state.data = {
+          articleText: '',
+          topicText: '',
+          inputMode: 'article',
+          intervieweeInfo: '',
+          intervieweeName: '',
+          intervieweeGender: '',
+          intervieweeImage: ''
+        };
+      }
       const { intervieweeInfo, intervieweeName } = state.data;
 
       if (state.inReflectionMode) state.feedbackTranscript = state.reflectionTranscript;
@@ -709,6 +1116,13 @@ import { callOpenAI } from './openai-api.js';
 
       questionElement.innerText = `Q: ${userQuery}`;
       answerElement.innerText = `A: ${trimmedResponse}`;
+
+      // Get the original question text from the Q&A block's dataset
+      // This is the question that was stored in unansweredQuestions
+      let originalQuestion = null;
+      if (qaBlock && qaBlock.dataset && qaBlock.dataset.originalQuestion) {
+        originalQuestion = qaBlock.dataset.originalQuestion;
+      }
 
       // determine which transcript array to update: prefer qaBlock.dataset.txMode if present
       // mainly for error handling
@@ -751,6 +1165,32 @@ import { callOpenAI } from './openai-api.js';
         const newIndex = targetArray.length;
         targetArray.push(`Q: ${userQuery}`, `A: ${trimmedResponse}`);
         if (qaBlock && qaBlock.dataset) qaBlock.dataset.txIndex = String(newIndex);
+        
+        // If this is an interview question, remove it from unansweredQuestions
+        if (txMode === 'interview' && Array.isArray(state.unansweredQuestions) && originalQuestion) {
+          // Remove the question from unanswered list using the original question text
+          const beforeCount = state.unansweredQuestions.length;
+          state.unansweredQuestions = state.unansweredQuestions.filter(q => {
+            const qTrimmed = q.trim();
+            const originalQuestionTrimmed = originalQuestion.trim();
+            
+            // Normalize both for comparison (remove "Q: " prefix if present, case-insensitive)
+            const qNormalized = qTrimmed.replace(/^Q:\s*/i, '').trim().toLowerCase();
+            const originalNormalized = originalQuestionTrimmed.replace(/^Q:\s*/i, '').trim().toLowerCase();
+            
+            // Return false (filter out) if they match
+            return qNormalized !== originalNormalized;
+          });
+          
+          // Debug log to verify removal
+          if (state.unansweredQuestions.length < beforeCount) {
+            console.log('Successfully removed question from unanswered list:', originalQuestion);
+            console.log('Remaining unanswered questions:', state.unansweredQuestions.length);
+          } else {
+            console.warn('Question not found in unanswered list:', originalQuestion);
+            console.log('Current unanswered questions:', state.unansweredQuestions);
+          }
+        }
       }
 
       // start audio synthesis in *parallel* with displaying the text
@@ -825,6 +1265,7 @@ import { callOpenAI } from './openai-api.js';
         .catch(error => {
           console.error('Error playing audio:', error);
         });
+        scheduleSave();
     } catch (error) {
       console.error('Error processing response:', error);
     }
@@ -1027,6 +1468,7 @@ import { callOpenAI } from './openai-api.js';
         }
       }
     });
+    scheduleSave();
   }
 
   /**
@@ -1067,7 +1509,7 @@ import { callOpenAI } from './openai-api.js';
     // Immediately switch to the Reflection tab and show a loading placeholder
     elements.intervieweeAvatar.src = IMAGES.teacher;
     try {
-      // enable reflection tab if needed
+      // enable reflection tab if needed (should already be enabled in interview mode, but ensure it)
       const tabReflection = id('tab-reflection');
       if (tabReflection) { tabReflection.disabled = false; tabReflection.style.opacity = '1'; }
       switchToReflectionTab();
@@ -1115,6 +1557,12 @@ import { callOpenAI } from './openai-api.js';
   async function addReflectionAndRedoPrompt(feedbackType) {
     try {
       state.inReflectionMode = true;
+      // Show mic button and help icon in reflection mode
+      if (elements.micButton) elements.micButton.style.display = 'flex';
+      const questionTipsIcon = id('questionTipsIcon');
+      const questionTipsButton = id('questionTipsButton');
+      if (questionTipsIcon) questionTipsIcon.style.display = 'block';
+      if (questionTipsButton) questionTipsButton.style.display = 'block';
       showBottomBarElements();
 
       disableInterviewButtons();
@@ -1126,8 +1574,13 @@ import { callOpenAI } from './openai-api.js';
           const existing = reflectionSection.querySelector('.reflection-loading');
           if (existing) existing.remove();
           // If this call is from a module button (feedbackType is a function) or section is empty, show loading
+          // But don't clear existing reflection transcript blocks - just show loading overlay
           if (typeof feedbackType === 'function' || reflectionSection.children.length === 0) {
+            // Only clear if there are no transcript blocks yet
+            const hasTranscriptBlocks = reflectionSection.querySelectorAll('.qa-block').length > 0;
+            if (!hasTranscriptBlocks) {
             reflectionSection.innerHTML = '';
+            }
             const loadingDiv = document.createElement('div');
             loadingDiv.className = 'reflection-loading';
             loadingDiv.innerText = 'Loading feedback...';
@@ -1138,12 +1591,23 @@ import { callOpenAI } from './openai-api.js';
       // If a specific feedbackType (module) was provided, use it. Otherwise use the
       // general feedback module to give an overview first.
       let feedback;
+      let moduleName = 'General Feedback';
+      
       if (typeof feedbackType === 'function') {
+        // Find the module name for this function
+        const moduleIndex = state.moduleFunctions.indexOf(feedbackType);
+        if (moduleIndex >= 0 && moduleIndex < state.modules.length) {
+          moduleName = state.modules[moduleIndex];
+        }
         feedback = await feedbackType(state.fullTranscript);
       } else {
         console.log(state.fullTranscript);
         feedback = await generalFeedback(state.fullTranscript);
       }
+      
+      // Save feedback to reflection transcript with module name as question
+      state.reflectionTranscript.push(`Q: ${moduleName}`, `A: ${feedback}`);
+      scheduleSave();
 
       const audioContent = await synthesizeSpeech(feedback, 'en-US-Neural2-D');
       if (audioContent) {
@@ -1151,7 +1615,33 @@ import { callOpenAI } from './openai-api.js';
         state.audio.play();
       }
 
-      const newReflectionPause = displayReflectionUI(feedback);
+      // Remove loading placeholder
+      const reflectionSection = id('reflectionBlockSection');
+      if (reflectionSection) {
+        const loading = reflectionSection.querySelector('.reflection-loading');
+        if (loading) loading.remove();
+      }
+      
+      // Render reflection transcript blocks (which now includes the new feedback)
+      if (reflectionSection && Array.isArray(state.reflectionTranscript) && state.reflectionTranscript.length > 0) {
+        renderTranscriptBlocks(reflectionSection, state.reflectionTranscript, 'reflection');
+      }
+      
+      // Also show the module buttons for getting more feedback (append after transcript blocks)
+      const buttonContainer = createModuleButtonContainer();
+      if (reflectionSection && buttonContainer) {
+        // Remove existing button container if present
+        const existingButtons = reflectionSection.querySelector('.button-container');
+        if (existingButtons) existingButtons.remove();
+        reflectionSection.appendChild(buttonContainer);
+      }
+      
+      // Ensure reflection container is visible
+      const reflectionContainer = id('reflectionContainer');
+      if (reflectionContainer) {
+        reflectionContainer.style.display = 'block';
+      }
+      
       // enable reflection tab (first time), enable reflection Done button, and disable interview tab while in reflection mode
       try {
         const tabInterview = id('tab-interview');
@@ -1354,7 +1844,12 @@ import { callOpenAI } from './openai-api.js';
       if (rDone) rDone.remove();
     }
     elements.brainstormTextarea.classList.remove('expanded');
-    hideBottomBarElements();
+    // Hide mic button and help icon when exiting reflection mode (back to interview mode)
+    if (elements.micButton) elements.micButton.style.display = 'none';
+    const questionTipsIcon = id('questionTipsIcon');
+    const questionTipsButton = id('questionTipsButton');
+    if (questionTipsIcon) questionTipsIcon.style.display = 'none';
+    if (questionTipsButton) questionTipsButton.style.display = 'none';
 
     enableInterviewButtons();
     // when finishing reflection, re-enable interview tab and keep reflection tab enabled
@@ -1366,6 +1861,9 @@ import { callOpenAI } from './openai-api.js';
       const reflectionDoneButton = id('reflectionDoneButton');
       if (reflectionDoneButton) { reflectionDoneButton.disabled = true; reflectionDoneButton.style.opacity = '0.7'; }
       try { switchToInterviewTab(); } catch (e) { }
+      state.inBrainstormMode = false;
+      applyModeUIFromState();
+      scheduleSave();
     } catch (e) { }
   }
 
@@ -1470,6 +1968,7 @@ import { callOpenAI } from './openai-api.js';
           commentElement.innerText = comment;
           elements.qaContainer.appendChild(commentElement);
           state.fullTranscript.push(`*interviewer note*: ${comment}`);
+          scheduleSave();
           commentBox.remove();
         }
       }
@@ -1765,6 +2264,10 @@ Be concise, practical, and provide exact phrasings the student can use.`;
    * Formats article text using AI
    */
   async function formatArticleText() {
+    if (!state.data) {
+      console.warn('state.data is not initialized, cannot format article');
+      return;
+    }
     const { articleText, topicText, inputMode } = state.data;
 
     if (articleText && !state.articleFormatted) {
@@ -1794,6 +2297,10 @@ Be concise, practical, and provide exact phrasings the student can use.`;
    * Displays article text
    */
   async function displayArticleText() {
+    if (!state.data) {
+      console.warn('state.data is not initialized, cannot display article');
+      return;
+    }
     const { articleText, inputMode, topicText } = state.data;
 
     // If there is no article (topic-only flow), just show a friendly message
@@ -1831,6 +2338,10 @@ Be concise, practical, and provide exact phrasings the student can use.`;
    * Displays interviewee information
    */
   function displayIntervieweeInfo() {
+    if (!state.data) {
+      console.warn('state.data is not initialized, cannot display interviewee info');
+      return;
+    }
     const { intervieweeInfo, intervieweeImage, intervieweeName } = state.data;
 
     if (intervieweeInfo) {
@@ -1966,6 +2477,7 @@ Be concise, practical, and provide exact phrasings the student can use.`;
    */
   function handleNewInterviewee() {
     saveTranscript();
+    scheduleSave();
     window.location.href = 'select-interviewee.html';
   }
 
@@ -1974,6 +2486,7 @@ Be concise, practical, and provide exact phrasings the student can use.`;
    */
   function handleCreateBlog() {
     saveTranscript();
+    scheduleSave();
     window.location.href = 'edit-article.html';
   }
 
@@ -1999,7 +2512,23 @@ Be concise, practical, and provide exact phrasings the student can use.`;
    */
   function showBottomBarElements() {
     elements.intervieweeAvatar.style.display = 'flex';
+    // Only show mic button in brainstorm or reflection mode, not in interview mode
+    if (state.inBrainstormMode || state.inReflectionMode) {
     elements.micButton.style.display = 'flex';
+    } else {
+      elements.micButton.style.display = 'none';
+    }
+    
+    // Show help icon only in brainstorm or reflection mode
+    const questionTipsIcon = id('questionTipsIcon');
+    const questionTipsButton = id('questionTipsButton');
+    if (state.inBrainstormMode || state.inReflectionMode) {
+      if (questionTipsIcon) questionTipsIcon.style.display = 'block';
+      if (questionTipsButton) questionTipsButton.style.display = 'block';
+    } else {
+      if (questionTipsIcon) questionTipsIcon.style.display = 'none';
+      if (questionTipsButton) questionTipsButton.style.display = 'none';
+    }
   }
 
   /**

@@ -118,20 +118,27 @@
             border-radius: 50%;
             border: 2px solid #007BFF;
             cursor: pointer;
-            padding: 0;
+            padding: 8px;
             background: none;
-            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            gap: 4px;
             transition: transform 0.2s, box-shadow 0.2s;
         }
         .profile-button:hover {
             transform: scale(1.05);
-            box-shadow: 0 4px 8px rgba(0, 123, 255, 0.3);
         }
-        .profile-button img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            display: block;
+        .profile-button .menu-icon-bar {
+            width: 24px;
+            height: 3px;
+            background-color: #333;
+            border-radius: 2px;
+            transition: all 0.3s;
+        }
+        .profile-button:hover .menu-icon-bar {
+            background-color: #007BFF;
         }
         .profile-dropdown {
             position: absolute;
@@ -172,6 +179,9 @@
         }
         .profile-dropdown-item.sign-out:hover {
             background-color: #fee;
+        }
+        .profile-dropdown-item.dashboard {
+            color: #007BFF;
         }
 
         .personality-section {
@@ -233,9 +243,12 @@
 <body>
     <div class="profile-menu">
         <button id="profile-btn" class="profile-button">
-            <img id="profile-img" src="icons/default-avatar.png" alt="Profile">
+            <span class="menu-icon-bar"></span>
+            <span class="menu-icon-bar"></span>
+            <span class="menu-icon-bar"></span>
         </button>
         <div id="profile-dropdown" class="profile-dropdown">
+            <div class="profile-dropdown-item dashboard" id="dashboard-item">Dashboard</div>
             <div class="profile-dropdown-item sign-out" id="sign-out-item">Sign Out</div>
         </div>
     </div>
@@ -303,6 +316,7 @@
             // Profile menu dropdown functionality
             const profileBtn = document.getElementById('profile-btn');
             const profileDropdown = document.getElementById('profile-dropdown');
+            const dashboardItem = document.getElementById('dashboard-item');
             const signOutItem = document.getElementById('sign-out-item');
 
             // Toggle dropdown on profile button click
@@ -319,6 +333,13 @@
                     profileDropdown.classList.remove('show');
                 }
             });
+
+            // Handle dashboard navigation
+            if (dashboardItem) {
+                dashboardItem.addEventListener('click', () => {
+                    window.location.href = 'dashboard.html';
+                });
+            }
 
             // Handle sign out
             if (signOutItem) {
@@ -456,8 +477,11 @@
 
             // Save selected personality
             localStorage.setItem('selectedPersonalityIndex', selectedPersonalityIndex.toString());
+            
+            // Save current interview ID (using interviewee name)
+            localStorage.setItem('currentInterviewId', name);
 
-            window.location.href = 'reading-page.html';
+            window.location.href = `reading-page.html?interviewId=${encodeURIComponent(name)}`;
         }
     </script>
 </body>
