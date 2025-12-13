@@ -5,7 +5,7 @@ export async function callClaude(prompt) {
 
         const requestBody = {
             model: "claude-3-5-haiku-20241022",
-            max_tokens: 4096,
+            max_tokens: 8192,
             messages: [
                 {
                     role: "user",
@@ -18,10 +18,7 @@ export async function callClaude(prompt) {
         const response = await fetch('/claude/v1/messages', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01',
-                'anthropic-dangerous-direct-browser-access': 'true'
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify(requestBody)
         });

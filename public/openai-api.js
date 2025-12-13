@@ -12,17 +12,12 @@ async function getOpenAIApiKey() {
     }
 }
 
-
-
-
 export async function callOpenAI(prompt) {
     try {
-        const apiKey = await getOpenAIApiKey();
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        const response = await fetch('/openai/v1/chat/completions', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify({
                 model: 'gpt-3.5-turbo',
@@ -34,6 +29,12 @@ export async function callOpenAI(prompt) {
         });
 
         if (!response.ok) {
+            const errorText = await response.text();
+            console.error('OpenAI API Error:', {
+                status: response.status,
+                statusText: response.statusText,
+                body: errorText
+            });
             throw new Error(`HTTP error! status: ${response.status}`);
         }
 

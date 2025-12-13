@@ -28,18 +28,20 @@
     textarea {
       font-family: 'Open Sans', sans-serif;
       font-weight: 300;
-      width: 80%;
-      max-width: 900px;
-      height: 300px;
-      padding: 20px;
-      margin-bottom: 20px;
-      border-radius: 10px;
+      width: 90%;
+      max-width: 1300px;
+      height: 450px;
+      padding: 24px;
+      margin: 0 auto 24px auto;
+      border-radius: 14px;
       border: 1px solid #ccc;
-      font-size: 16px;
+      font-size: 18px;
       resize: none;
       outline: none;
       box-sizing: border-box;
+      display: block;
     }
+
     button {
       font-family: 'Open Sans', sans-serif;
       width: 150px;
@@ -55,45 +57,159 @@
     button:hover {
       background-color: #0056b3;
     }
+    #mode-choice {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-bottom: 12px;
+    }
+    .mode-option {
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+    #topic-input-wrapper {
+      width: 100%;
+      display: flex;
+      justify-content: center;
+    }
+    #topic-input-wrapper input {
+      width: 90%;
+      max-width: 1300px;
+      padding: 18px 20px;
+      font-size: 18px;
+      border-radius: 12px;
+      border: 1px solid #ccc;
+      font-family: 'Open Sans', sans-serif;
+      box-sizing: border-box;
+      margin: 0 auto 16px auto;
+      display: block;
+    }
+    #article-input-wrapper {
+      width: 100%;
+      display: flex;
+      justify-content: center;
+    }
     #logo {
       width: 400px;
       max-width: 80%;
       margin-bottom: 20px;
     }
-    .logout-button {
+    .profile-menu {
       position: fixed;
       top: 10px;
       right: 10px;
-      padding: 10px 20px;
-      font-size: 16px;
-      background-color: #007BFF;
-      color: white;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      font-family: 'Open Sans', sans-serif;
-      font-weight: 300;
       z-index: 10000;
     }
-    .logout-button:hover {
-      background-color: #0056b3;
+    .profile-button {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      border: 2px solid #007BFF;
+      cursor: pointer;
+      padding: 0;
+      background: none;
+      overflow: hidden;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .profile-button:hover {
+      transform: scale(1.05);
+      box-shadow: 0 4px 8px rgba(0, 123, 255, 0.3);
+    }
+    .profile-button img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .profile-dropdown {
+      position: absolute;
+      top: 60px;
+      right: 0;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      min-width: 160px;
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(-10px);
+      transition: opacity 0.2s, visibility 0.2s, transform 0.2s;
+    }
+    .profile-dropdown.show {
+      opacity: 1;
+      visibility: visible;
+      transform: translateY(0);
+    }
+    .profile-dropdown-item {
+      padding: 12px 20px;
+      cursor: pointer;
+      font-family: 'Open Sans', sans-serif;
+      font-size: 14px;
+      color: #333;
+      border-bottom: 1px solid #f0f0f0;
+      transition: background-color 0.2s;
+    }
+    .profile-dropdown-item:last-child {
+      border-bottom: none;
+    }
+    .profile-dropdown-item:hover {
+      background-color: #f5f5f5;
+    }
+    .profile-dropdown-item.sign-out {
+      color: #dc3545;
+      font-weight: 500;
+    }
+    .profile-dropdown-item.sign-out:hover {
+      background-color: #fee;
     }
   </style>
 </head>
 
 <body>
   <img src="icons/logo.png" alt="Logo" id="logo" />
-  <p>Input an article of your choice</p>
-  <textarea id="article-input" placeholder="Paste your article here..."></textarea>
+  <p>Would you like to start with a topic or an article?</p>
+  <div id="mode-choice">
+    <label class="mode-option">
+      <input type="radio" name="input-mode" value="topic" checked>
+      Start with a topic
+    </label>
+    <label class="mode-option">
+      <input type="radio" name="input-mode" value="article">
+      Start with an article
+    </label>
+  </div>
+
+  <div id="topic-input-wrapper">
+    <input id="topic-input" type="text" placeholder="Enter a topic you are interested in (e.g., local park closure)">
+  </div>
+
+  <div id="article-input-wrapper" style="display: none;">
+    <textarea id="article-input" placeholder="Paste your article here..."></textarea>
+  </div>
   <button id="next-btn">Next</button>
-  <button id="logout-btn" class="logout-button">Sign Out</button>
+  
+  <div class="profile-menu">
+    <button id="profile-btn" class="profile-button">
+      <img id="profile-img" src="icons/default-avatar.png" alt="Profile">
+    </button>
+    <div id="profile-dropdown" class="profile-dropdown">
+      <div class="profile-dropdown-item sign-out" id="sign-out-item">Sign Out</div>
+    </div>
+  </div>
 
   <script type="module">
     import { auth, onAuthStateChanged, signOut } from './firebase-init.js';
     import { callClaude } from './claude-api.js';
-    import { callOpenAI } from './openai-api.js';
+    import { callGemini } from './gemini-api.js';
 
     const textarea = document.getElementById('article-input');
+    const topicInput = document.getElementById('topic-input');
+    const topicWrapper = document.getElementById('topic-input-wrapper');
+    const articleWrapper = document.getElementById('article-input-wrapper');
+    const modeRadios = document.querySelectorAll('input[name="input-mode"]');
     const nextBtn  = document.getElementById('next-btn');
 
     // make sure user is logged in
@@ -103,12 +219,40 @@
       }
     });
 
+    function getSelectedMode() {
+      const selected = Array.from(modeRadios).find(r => r.checked);
+      return selected ? selected.value : 'topic';
+    }
+
+    function updateModeUI() {
+      const mode = getSelectedMode();
+      if (mode === 'topic') {
+        topicWrapper.style.display = 'block';
+        articleWrapper.style.display = 'none';
+      } else {
+        topicWrapper.style.display = 'none';
+        articleWrapper.style.display = 'block';
+      }
+    }
+
+    modeRadios.forEach(radio => {
+      radio.addEventListener('change', updateModeUI);
+    });
+    updateModeUI();
+
     function buildPrompt(articleText) {
       return `Identify the main interviewees (max 3) in the following article:
 
 ${articleText}
 
 PLEASE RESPOND IN THIS FORMAT, USE A COLON AFTER.
+name:description
+name:description
+name:description`;
+    }
+
+    function buildTopicPrompt(topicText) {
+      return `You are a journalism mentor. Suggest up to 3 potential interviewees for a student exploring the topic "${topicText}". Respond ONLY in this format (one per line, max 3 lines):
 name:description
 name:description
 name:description`;
@@ -147,8 +291,8 @@ name:description`;
           // Try Claude first
           response = await callClaude(prompt);
         } catch (e) {
-          console.warn('callClaude failed, falling back to callOpenAI:', e);
-          response = await callOpenAI(prompt);
+          console.warn('callClaude failed, falling back to callGemini:', e);
+          response = await callGemini(prompt);
         }
 
         const normalized = normalizeLLMResponse(response);
@@ -159,6 +303,8 @@ name:description`;
         const interviewees = parseInterviewees(normalized);
 
         // Persist
+        localStorage.setItem('inputMode', 'article');
+        localStorage.setItem('topicText', '');
         localStorage.setItem('articleText', articleText);
         localStorage.setItem('interviewees', JSON.stringify(interviewees));
         localStorage.setItem('intervieweeNameList', JSON.stringify([]));
@@ -177,9 +323,75 @@ name:description`;
       }
     }
 
-    const logoutBtn = document.getElementById('logout-btn');
+    async function processTopic() {
+      const topicText = topicInput?.value?.trim() ?? '';
+      if (!topicText) {
+        alert('Please enter a topic.');
+        return;
+      }
 
-    logoutBtn.addEventListener('click', async () => {
+      nextBtn.disabled = true;
+      nextBtn.textContent = 'Processing...';
+
+      try {
+        const prompt = buildTopicPrompt(topicText);
+
+        let response;
+        try {
+          response = await callClaude(prompt);
+        } catch (e) {
+          console.warn('callClaude failed, falling back to callGemini:', e);
+          response = await callGemini(prompt);
+        }
+
+        const normalized = normalizeLLMResponse(response);
+        if (!normalized) {
+          throw new Error('Empty response from the model.');
+        }
+
+        const interviewees = parseInterviewees(normalized);
+
+        // Persist
+        localStorage.setItem('inputMode', 'topic');
+        localStorage.setItem('topicText', topicText);
+        localStorage.setItem('articleText', '');
+        localStorage.setItem('interviewees', JSON.stringify(interviewees));
+        localStorage.setItem('intervieweeNameList', JSON.stringify([]));
+        localStorage.setItem('intervieweeImageList', JSON.stringify([]));
+        localStorage.setItem('transcriptList', JSON.stringify([]));
+        localStorage.setItem('transcripts', JSON.stringify([]));
+
+        // Navigate
+        window.location.href = 'select-interviewee.html';
+      } catch (err) {
+        console.error(err);
+        alert('Sorry, something went wrong while processing the topic. Check the console for details.');
+      } finally {
+        nextBtn.disabled = false;
+        nextBtn.textContent = 'Next';
+      }
+    }
+
+    // Profile menu dropdown functionality
+    const profileBtn = document.getElementById('profile-btn');
+    const profileDropdown = document.getElementById('profile-dropdown');
+    const signOutItem = document.getElementById('sign-out-item');
+
+    // Toggle dropdown on profile button click
+    profileBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      profileDropdown.classList.toggle('show');
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!profileBtn.contains(e.target) && !profileDropdown.contains(e.target)) {
+        profileDropdown.classList.remove('show');
+      }
+    });
+
+    // Handle sign out
+    signOutItem.addEventListener('click', async () => {
       try {
         await signOut(auth);
         window.location.replace('login.html');
@@ -190,7 +402,14 @@ name:description`;
     });
 
 
-    nextBtn.addEventListener('click', processArticle);
+    nextBtn.addEventListener('click', () => {
+      const mode = getSelectedMode();
+      if (mode === 'article') {
+        processArticle();
+      } else {
+        processTopic();
+      }
+    });
   </script>
 </body>
 </html>

@@ -3,8 +3,9 @@
  */
 
 import { callClaude } from './claude-api.js';
-import { callOpenAI } from './openai-api.js';
+import { callGemini } from './gemini-api.js';
 import { auth, signOut } from './firebase-init.js';
+import { callOpenAI } from './openai-api.js';
 
 "use strict";
 
@@ -166,10 +167,29 @@ import { auth, signOut } from './firebase-init.js';
     id("newIntervieweeButton").addEventListener('click', handleNewInterviewee);
     id("createBlogButton").addEventListener('click', handleCreateBlog);
 
-    // Sign out button
-    const logoutBtn = id('logout-btn');
-    if (logoutBtn) {
-      logoutBtn.addEventListener('click', async () => {
+    // Profile menu dropdown functionality
+    const profileBtn = id('profile-btn');
+    const profileDropdown = id('profile-dropdown');
+    const signOutItem = id('sign-out-item');
+
+    // Toggle dropdown on profile button click
+    if (profileBtn) {
+      profileBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        profileDropdown.classList.toggle('show');
+      });
+    }
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+      if (profileBtn && profileDropdown && !profileBtn.contains(e.target) && !profileDropdown.contains(e.target)) {
+        profileDropdown.classList.remove('show');
+      }
+    });
+
+    // Handle sign out
+    if (signOutItem) {
+      signOutItem.addEventListener('click', async () => {
         try {
           await signOut(auth);
           window.location.replace('login.html');
@@ -241,6 +261,8 @@ import { auth, signOut } from './firebase-init.js';
    */
   function loadStoredData() {
     const articleText = localStorage.getItem('articleText');
+    const topicText = localStorage.getItem('topicText') || '';
+    const inputMode = localStorage.getItem('inputMode') || (articleText ? 'article' : 'topic');
     const intervieweeInfo = localStorage.getItem('selectedInterviewee');
     const intervieweeName = localStorage.getItem('intervieweeName');
     const intervieweeGender = localStorage.getItem('intervieweeGender');
@@ -249,6 +271,8 @@ import { auth, signOut } from './firebase-init.js';
 
     state.data = {
       articleText,
+      topicText,
+      inputMode,
       intervieweeInfo,
       intervieweeName,
       intervieweeGender,
@@ -272,8 +296,9 @@ import { auth, signOut } from './firebase-init.js';
    * Sets up initial UI state
    */
   function setupUI() {
-    const { intervieweeImage } = state.data;
+    const { intervieweeImage, inputMode } = state.data;
     const defaultImage = 'icons/default-avatar.png';
+    const hasArticle = state.data.articleText && inputMode !== 'topic';
 
     // if interviewee image exists, use it; otherwise use default
     if (intervieweeImage) {
@@ -287,6 +312,17 @@ import { auth, signOut } from './firebase-init.js';
     }
 
     elements.brainstormTextarea.classList.add('expanded');
+
+    // Hide article UI when user started with a topic
+    if (!hasArticle) {
+      try {
+        const readArticleButton = id('readArticleButton');
+        const readArticleIcon = id('readArticleIcon');
+        if (readArticleButton) readArticleButton.style.display = 'none';
+        if (readArticleIcon) readArticleIcon.style.display = 'none';
+        if (elements.playButton) elements.playButton.style.display = 'none';
+      } catch (e) { }
+    }
   }
 
   /**
@@ -301,11 +337,11 @@ import { auth, signOut } from './firebase-init.js';
       return;
     }
 
-    const { intervieweeName, articleText } = state.data;
-    state.intervieweeSummary = await callOpenAI(
-      `Can you create a summary of the responses and characteristics of ${intervieweeName} from this article: ${articleText}`
-    );
-    console.log(state.intervieweeSummary);
+    const { intervieweeName, articleText, topicText, inputMode } = state.data;
+    const summaryPrompt = (inputMode === 'article' && articleText)
+      ? `Can you create a summary of the responses and characteristics of ${intervieweeName} from this article: ${articleText}`
+      : `Create a concise background and likely perspective for ${intervieweeName} for an interview about the topic: "${topicText}". Include role/expertise and key traits in 4-6 sentences.`;
+    state.intervieweeSummary = await callGemini(summaryPrompt);
 
     // identify questions based on question marks in brainstorm text
     const questions = await identifyQuestions(brainstormText);
@@ -1171,7 +1207,7 @@ import { auth, signOut } from './firebase-init.js';
    */
   async function evaluateInterview() {
     const interviewScoringPrompt = buildInterviewScoringPrompt();
-    const response = await callOpenAI(interviewScoringPrompt);
+    const response = await callGemini(interviewScoringPrompt);
 
     const regex = /Average:\s*(\d+(?:\.\d+)?)/;
     const match = response.match(regex);
@@ -1729,24 +1765,28 @@ Be concise, practical, and provide exact phrasings the student can use.`;
    * Formats article text using AI
    */
   async function formatArticleText() {
-    const { articleText } = state.data;
+    const { articleText, topicText, inputMode } = state.data;
 
     if (articleText && !state.articleFormatted) {
       try {
         state.formattedArticle = await callOpenAI(
-          `Remove any syntax errors and incorrectly pasted parts from the following article. DO NOT CHANGE THE WORDS OF THE ARTICLE OR SUMMARIZE IT. Then format the article to be well-structured and readable in HTML format, ONLY USE headers and paragraphs. DO NOT TRUNCATE THE ARTICLE OR OMIT ANY PARTS. IMPORTANT: THE FULL ARTICLE SHOULD BE FORMATTED!!!  \n\n${articleText}`
+          `Remove any syntax errors and incorrectly pasted parts from the following article. DO NOT CHANGE THE WORDS OF THE ARTICLE OR SUMMARIZE IT. Then format the article to be well-structured and readable in HTML format, ONLY USE headers and paragraphs. Do the entire article without leaving anything out! Do not add any additional text outside of what I want (eg., here is the article:)  \n\n${articleText}`
         );
         state.formattedArticle = state.formattedArticle.replace(
           /Here is the article formatted in HTML with headers and paragraphs:/,
           ''
         ).trim();
+        console.log(`Remove any syntax errors and incorrectly pasted parts from the following article. DO NOT CHANGE THE WORDS OF THE ARTICLE OR SUMMARIZE IT. Then format the article to be well-structured and readable in HTML format, ONLY USE headers and paragraphs. Do the entire article without leaving anything out! Do not add any additional text outside of what I want (eg., here is the article:)  \n\n${articleText}`);
+        console.log(state.formattedArticle);
         state.articleFormatted = true;
       } catch (error) {
         console.error('Error formatting article:', error);
         state.formattedArticle = "An error occurred while formatting the article.";
       }
-    } else if (!articleText) {
-      state.formattedArticle = "No article found.";
+    } else if (!articleText || inputMode === 'topic') {
+      const topicLine = topicText ? `You started with a topic: "${topicText}".` : 'You started with a topic.';
+      state.formattedArticle = `${topicLine} There is no article to read.`;
+      state.articleFormatted = true;
     }
   }
 
@@ -1754,6 +1794,18 @@ Be concise, practical, and provide exact phrasings the student can use.`;
    * Displays article text
    */
   async function displayArticleText() {
+    const { articleText, inputMode, topicText } = state.data;
+
+    // If there is no article (topic-only flow), just show a friendly message
+    if (!articleText || inputMode === 'topic') {
+      const topicLine = topicText ? `Topic: "${topicText}"` : 'You started with a topic.';
+      elements.articleTextContainer.innerHTML = `${topicLine}<br/>No article to display.`;
+      elements.articleTextContainer.style.display = "block";
+      elements.menuButtons.forEach(button => button.style.display = "none");
+      if (elements.playButton) elements.playButton.style.display = "none";
+      return;
+    }
+
     elements.loadingIndicator.style.display = 'flex';
 
     const thinkingText = document.createElement('p');

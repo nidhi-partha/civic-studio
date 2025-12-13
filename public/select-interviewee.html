@@ -106,24 +106,72 @@
             background-color: #f0f8ff;
         }
 
-        .logout-button {
+        .profile-menu {
             position: fixed;
             top: 10px;
             right: 10px;
-            padding: 10px 20px;
-            font-size: 16px;
-            background-color: #007BFF;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-family: 'Open Sans', sans-serif;
-            font-weight: 300;
             z-index: 10000;
         }
-
-        .logout-button:hover {
-            background-color: #0056b3;
+        .profile-button {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            border: 2px solid #007BFF;
+            cursor: pointer;
+            padding: 0;
+            background: none;
+            overflow: hidden;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .profile-button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 8px rgba(0, 123, 255, 0.3);
+        }
+        .profile-button img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+        .profile-dropdown {
+            position: absolute;
+            top: 60px;
+            right: 0;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            min-width: 160px;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-10px);
+            transition: opacity 0.2s, visibility 0.2s, transform 0.2s;
+        }
+        .profile-dropdown.show {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+        }
+        .profile-dropdown-item {
+            padding: 12px 20px;
+            cursor: pointer;
+            font-family: 'Open Sans', sans-serif;
+            font-size: 14px;
+            color: #333;
+            border-bottom: 1px solid #f0f0f0;
+            transition: background-color 0.2s;
+        }
+        .profile-dropdown-item:last-child {
+            border-bottom: none;
+        }
+        .profile-dropdown-item:hover {
+            background-color: #f5f5f5;
+        }
+        .profile-dropdown-item.sign-out {
+            color: #dc3545;
+            font-weight: 500;
+        }
+        .profile-dropdown-item.sign-out:hover {
+            background-color: #fee;
         }
 
         .personality-section {
@@ -183,7 +231,14 @@
 </head>
 
 <body>
-    <button id="logout-btn" class="logout-button">Sign Out</button>
+    <div class="profile-menu">
+        <button id="profile-btn" class="profile-button">
+            <img id="profile-img" src="icons/default-avatar.png" alt="Profile">
+        </button>
+        <div id="profile-dropdown" class="profile-dropdown">
+            <div class="profile-dropdown-item sign-out" id="sign-out-item">Sign Out</div>
+        </div>
+    </div>
     <div class="main-container">
         <h1>Identified Interviewees</h1>
         <p class="instructions">Choose an interviewee</p>
@@ -199,7 +254,7 @@
 
     <script type="module">
         import { callClaude } from './claude-api.js';
-        import { callOpenAI } from './openai-api.js';
+        import { callGemini } from './gemini-api.js';
         import { auth, signOut } from './firebase-init.js';
 
         let img = '';
@@ -245,10 +300,29 @@
             }
             document.getElementById("next-btn").addEventListener("click", goToReadingPage);
 
-            // Sign out button
-            const logoutBtn = document.getElementById('logout-btn');
-            if (logoutBtn) {
-                logoutBtn.addEventListener('click', async () => {
+            // Profile menu dropdown functionality
+            const profileBtn = document.getElementById('profile-btn');
+            const profileDropdown = document.getElementById('profile-dropdown');
+            const signOutItem = document.getElementById('sign-out-item');
+
+            // Toggle dropdown on profile button click
+            if (profileBtn) {
+                profileBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    profileDropdown.classList.toggle('show');
+                });
+            }
+
+            // Close dropdown when clicking outside
+            document.addEventListener('click', (e) => {
+                if (profileBtn && profileDropdown && !profileBtn.contains(e.target) && !profileDropdown.contains(e.target)) {
+                    profileDropdown.classList.remove('show');
+                }
+            });
+
+            // Handle sign out
+            if (signOutItem) {
+                signOutItem.addEventListener('click', async () => {
                     try {
                         await signOut(auth);
                         window.location.replace('login.html');
@@ -277,7 +351,7 @@
 
         async function getGenderImage(name, guyIndex, girlIndex) {
             const prompt = `Is the name "${name}" typically associated with a male or female? Respond with "male" or "female".`;
-            const response = await callOpenAI(prompt); // TODO change to callOpenAI
+            const response = await callGemini(prompt);
             console.log(name + " " + response);
             const gender = response.trim().toLowerCase();
             if (gender === 'female') {
