@@ -260,6 +260,15 @@ import { callOpenAI } from './openai-api.js';
       if (typeof data.selectedPersonalityIndex === 'number') {
         state.personalityIndex = data.selectedPersonalityIndex;
       }
+      
+      // Restore voice name if saved, otherwise set based on gender
+      if (data.voiceName && typeof data.voiceName === 'string') {
+        state.voiceName = data.voiceName;
+      } else if (data.intervieweeGender === 'female') {
+        state.voiceName = 'en-US-Journey-O';
+      } else {
+        state.voiceName = 'en-US-Neural2-D';
+      }
   
       // Restore brainstorm textarea content
       if (elements.brainstormTextarea && typeof s.brainstormTextarea === 'string') {
@@ -291,6 +300,7 @@ import { callOpenAI } from './openai-api.js';
       topicText: state.data?.topicText || '',
       inputMode: state.data?.inputMode || 'article',
       selectedPersonalityIndex: state.personalityIndex ?? 2,
+      voiceName: state.voiceName || 'en-US-Neural2-D',
   
       readingPageState: {
         inBrainstormMode: !!state.inBrainstormMode,
@@ -973,6 +983,12 @@ import { callOpenAI } from './openai-api.js';
 
       // otherwise start from the paused time
       pauseBut._audio.currentTime = pauseBut._pausedTime || 0;
+      
+      // Start word highlighting if answerElement is available
+      if (answerElement && pauseBut._audioText) {
+        highlightWordsDuringSpeech(answerElement, pauseBut._audio, pauseBut._audioText);
+      }
+      
       pauseBut._audio.play().then(() => {
         pauseBut.dataset.playing = 'true';
         pauseBut.dataset.loading = 'false';
@@ -983,12 +999,16 @@ import { callOpenAI } from './openai-api.js';
         pauseBut.src = IMAGES.play;
       });
 
-      // once it has ended reset variables
+      // once it has ended reset variables and clear highlighting
       pauseBut._audio.onended = function () {
         pauseBut.dataset.playing = 'false';
         pauseBut.src = IMAGES.play;
         pauseBut._pausedTime = 0;
         pauseBut.dataset.loading = 'false';
+        // Cleanup highlighting
+        if (pauseBut._audio._highlightCleanup) {
+          pauseBut._audio._highlightCleanup();
+        }
       };
     } catch (e) {
       console.error('handlePausePlay error', e);
@@ -1226,6 +1246,9 @@ import { callOpenAI } from './openai-api.js';
             state.audio = audioObj;
           }
 
+          // Start word highlighting for the answer text
+          highlightWordsDuringSpeech(answerElement, audioObj, trimmedResponse);
+
           // play the audio (either attached object or global/state audio)
           audioObj.play().then(() => {
             if (attachedToPause && pauseBut) {
@@ -1247,6 +1270,11 @@ import { callOpenAI } from './openai-api.js';
           // Ensure UI updates when audio ends (because the user may not have used pause play button)
           audioObj.onended = function () {
             try {
+              // Cleanup highlighting
+              if (audioObj._highlightCleanup) {
+                audioObj._highlightCleanup();
+              }
+              
               if (attachedToPause && pauseBut) {
                 pauseBut.dataset.playing = 'false';
                 pauseBut.src = IMAGES.play;
@@ -1355,6 +1383,211 @@ import { callOpenAI } from './openai-api.js';
 
       recognition.start();
     });
+  }
+
+  /**
+   * Highlights words in a text element as audio plays
+   * @param {HTMLElement} textElement - The element containing the text to highlight
+   * @param {HTMLAudioElement} audioObj - The audio object playing the speech
+   * @param {string} text - The full text being spoken (without prefixes like "A: ")
+   */
+  function highlightWordsDuringSpeech(textElement, audioObj, text) {
+    if (!textElement || !audioObj || !text) return;
+
+    // Extract text without prefix (e.g., remove "A: " or "Q: ")
+    const cleanText = text.replace(/^[QA]:\s*/i, '').trim();
+    if (!cleanText) return;
+
+    // Preserve the original HTML structure to maintain newlines and formatting
+    // Get the original content - use innerHTML if available, otherwise fall back to innerText
+    const originalContent = textElement.innerHTML || textElement.innerText || textElement.textContent;
+    const prefix = originalContent.match(/^[QA]:\s*/i)?.[0] || '';
+    
+    // Store original text for restoration (preserving newlines by using the actual text)
+    const originalText = textElement.innerText || textElement.textContent;
+    
+    // Split text into words (only actual words, not spaces or newlines)
+    // Use a regex that matches word boundaries and captures words separately from spaces
+    const wordMatches = [];
+    const regex = /\S+/g;
+    let match;
+    while ((match = regex.exec(cleanText)) !== null) {
+      wordMatches.push({
+        word: match[0],
+        startIndex: match.index,
+        endIndex: match.index + match[0].length
+      });
+    }
+    
+    let currentWordIndex = -1;
+    let highlightInterval = null;
+
+    // Function to update highlighting
+    const updateHighlight = () => {
+      if (!audioObj || audioObj.paused || audioObj.ended) {
+        clearHighlight();
+        return;
+      }
+
+      if (wordMatches.length === 0) return;
+
+      const currentTime = audioObj.currentTime;
+      const totalDuration = audioObj.duration || 1;
+      
+      if (totalDuration <= 0) return;
+      
+      // Calculate character-based progress for more accurate word timing
+      const totalChars = cleanText.length;
+      const progress = Math.min(currentTime / totalDuration, 0.99);
+      const estimatedCharPosition = Math.floor(progress * totalChars);
+      
+      // Add a small look-ahead (about 3% of duration or 0.1 seconds, whichever is smaller)
+      // This ensures we highlight the word slightly before it's spoken
+      const lookAheadTime = Math.min(totalDuration * 0.03, 0.1);
+      const adjustedTime = Math.min(currentTime + lookAheadTime, totalDuration);
+      const adjustedProgress = Math.min(adjustedTime / totalDuration, 0.99);
+      const adjustedCharPosition = Math.floor(adjustedProgress * totalChars);
+      
+      // Find the word that should be highlighted based on character position
+      // Strategy: Highlight the word we're about to start or currently in
+      // Move to next word when we've passed the end of current word
+      let newWordIndex = -1;
+      
+      // First, check if we've passed the end of the current word (if any)
+      // If so, move to the next word
+      if (currentWordIndex >= 0 && currentWordIndex < wordMatches.length) {
+        const currentWord = wordMatches[currentWordIndex];
+        // If we've passed the end of the current word, move to next
+        if (adjustedCharPosition >= currentWord.endIndex && currentWordIndex < wordMatches.length - 1) {
+          newWordIndex = currentWordIndex + 1;
+        } else if (adjustedCharPosition >= currentWord.startIndex) {
+          // Still within current word
+          newWordIndex = currentWordIndex;
+        }
+      }
+      
+      // If we don't have a current word or need to find the initial word
+      if (newWordIndex < 0) {
+        // Find the first word we've reached or are about to reach
+        for (let i = 0; i < wordMatches.length; i++) {
+          const wordMatch = wordMatches[i];
+          // Highlight when we're at or just before the word starts (with look-ahead)
+          if (adjustedCharPosition >= wordMatch.startIndex) {
+            newWordIndex = i;
+          } else {
+            // We haven't reached this word yet, stop searching
+            break;
+          }
+        }
+      }
+      
+      // Fallback: if still no word found, use progress-based estimation
+      if (newWordIndex < 0) {
+        newWordIndex = Math.floor(progress * wordMatches.length);
+      }
+      
+      // Ensure we have a valid index
+      newWordIndex = Math.max(0, Math.min(newWordIndex, wordMatches.length - 1));
+
+      // Only update if the word index changed
+      if (newWordIndex !== currentWordIndex) {
+        currentWordIndex = newWordIndex;
+        renderHighlightedText();
+      }
+    };
+
+    // Function to render text with current word highlighted
+    const renderHighlightedText = () => {
+      if (wordMatches.length === 0) return;
+      
+      let html = prefix;
+      let lastIndex = 0;
+      
+      // Helper function to escape HTML and convert newlines to <br>
+      // Use a placeholder to avoid escaping <br> tags
+      const processText = (text) => {
+        // First, replace newlines with a placeholder
+        const placeholder = '___NEWLINE_PLACEHOLDER___';
+        const withPlaceholder = text.replace(/\n/g, placeholder);
+        // Then escape HTML
+        const escaped = withPlaceholder
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+        // Finally, replace placeholder with <br>
+        return escaped.replace(new RegExp(placeholder, 'g'), '<br>');
+      };
+      
+      // Build HTML by inserting highlighted spans for the current word
+      // Preserve all whitespace including newlines by converting them to <br> tags
+      wordMatches.forEach((wordMatch, index) => {
+        // Add any text before this word (including spaces and newlines)
+        if (wordMatch.startIndex > lastIndex) {
+          const beforeText = cleanText.substring(lastIndex, wordMatch.startIndex);
+          html += processText(beforeText);
+        }
+        
+        // Add the word (highlighted if it's the current word)
+        // Escape the word text for HTML safety (words shouldn't have newlines, but be safe)
+        const escapedWord = wordMatch.word
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+        if (index === currentWordIndex) {
+          html += `<span class="word-highlight" style="background-color: #ffeb3b; padding: 2px 0; border-radius: 3px; transition: background-color 0.1s;">${escapedWord}</span>`;
+        } else {
+          html += escapedWord;
+        }
+        
+        lastIndex = wordMatch.endIndex;
+      });
+      
+      // Add any remaining text after the last word (including newlines)
+      if (lastIndex < cleanText.length) {
+        const afterText = cleanText.substring(lastIndex);
+        html += processText(afterText);
+      }
+      
+      textElement.innerHTML = html;
+    };
+
+    // Function to clear highlighting
+    const clearHighlight = () => {
+      if (highlightInterval) {
+        clearInterval(highlightInterval);
+        highlightInterval = null;
+      }
+      // Restore original text without highlighting
+      textElement.innerText = originalText;
+      currentWordIndex = -1;
+    };
+
+    // Start highlighting when audio starts playing
+    const startHighlighting = () => {
+      if (highlightInterval) return;
+      highlightInterval = setInterval(updateHighlight, 20); // Update every 20ms for more responsive tracking
+    };
+
+    // Stop highlighting
+    const stopHighlighting = () => {
+      clearHighlight();
+    };
+
+    // Attach event listeners
+    audioObj.addEventListener('play', startHighlighting);
+    audioObj.addEventListener('pause', stopHighlighting);
+    audioObj.addEventListener('ended', clearHighlight);
+    audioObj.addEventListener('timeupdate', updateHighlight);
+
+    // Clean up function (call this when audio is replaced or removed)
+    audioObj._highlightCleanup = () => {
+      stopHighlighting();
+      audioObj.removeEventListener('play', startHighlighting);
+      audioObj.removeEventListener('pause', stopHighlighting);
+      audioObj.removeEventListener('ended', clearHighlight);
+      audioObj.removeEventListener('timeupdate', updateHighlight);
+      delete audioObj._highlightCleanup;
+    };
   }
 
   /**
@@ -1612,6 +1845,14 @@ import { callOpenAI } from './openai-api.js';
       const audioContent = await synthesizeSpeech(feedback, 'en-US-Neural2-D');
       if (audioContent) {
         state.audio = new Audio(`data:audio/mp3;base64,${audioContent}`);
+        
+        // Find feedback text element for highlighting (from the most recently created feedback block)
+        const reflectionSection = id('reflectionBlockSection');
+        const feedbackTextElement = reflectionSection?.querySelector('.qa-block p');
+        if (feedbackTextElement) {
+          highlightWordsDuringSpeech(feedbackTextElement, state.audio, feedback);
+        }
+        
         state.audio.play();
       }
 
@@ -2014,6 +2255,14 @@ import { callOpenAI } from './openai-api.js';
       }
 
       pauseBut._audio.currentTime = pauseBut._pausedTime || 0;
+      
+      // Find feedback text element for highlighting
+      const feedbackTextElement = pauseBut.closest('.reflection-block')?.querySelector('p') ||
+                                  pauseBut.closest('.qa-block')?.querySelector('p');
+      if (feedbackTextElement && pauseBut._audioText) {
+        highlightWordsDuringSpeech(feedbackTextElement, pauseBut._audio, pauseBut._audioText);
+      }
+      
       pauseBut._audio.play().then(() => {
         pauseBut.dataset.playing = 'true';
         pauseBut.dataset.loading = 'false';
@@ -2029,6 +2278,10 @@ import { callOpenAI } from './openai-api.js';
         pauseBut.src = IMAGES.play;
         pauseBut._pausedTime = 0;
         pauseBut.dataset.loading = 'false';
+        // Cleanup highlighting
+        if (pauseBut._audio._highlightCleanup) {
+          pauseBut._audio._highlightCleanup();
+        }
       };
     } catch (e) {
       console.error('handleReflectionPausePlay error', e);
