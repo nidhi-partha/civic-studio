@@ -71,6 +71,16 @@
       transform: translateY(-2px);
       box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     }
+    .interview-card.completed {
+      background: #d4edda;
+      border: 2px solid #28a745;
+      cursor: pointer;
+      opacity: 0.9;
+    }
+    .interview-card.completed:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
     .interview-name {
       font-size: 20px;
       font-weight: 700;
@@ -177,8 +187,14 @@
     </div>
 
     <div class="interviews-section">
-      <h2 class="section-title">Past Interviews</h2>
-      <div id="interviews-container">
+      <h2 class="section-title">Ongoing Interviews</h2>
+      <div id="ongoing-interviews-container">
+        <div class="loading">Loading interviews...</div>
+      </div>
+    </div>
+    <div class="interviews-section">
+      <h2 class="section-title">Completed Interviews</h2>
+      <div id="completed-interviews-container">
         <div class="loading">Loading interviews...</div>
       </div>
     </div>
@@ -210,7 +226,8 @@
 
     // Load all interviews for the current user
     async function loadInterviews() {
-      const container = document.getElementById('interviews-container');
+      const ongoingContainer = document.getElementById('ongoing-interviews-container');
+      const completedContainer = document.getElementById('completed-interviews-container');
       
       try {
         const interviewsRef = collection(db, 'users', currentUser.uid, 'interviews');
@@ -218,82 +235,115 @@
         const snapshot = await getDocs(q);
 
         if (snapshot.empty) {
-          container.innerHTML = `
+          ongoingContainer.innerHTML = `
             <div class="empty-state">
               <p>No interviews yet.</p>
               <p>Click "New Interview" to get started!</p>
+            </div>
+          `;
+          completedContainer.innerHTML = `
+            <div class="empty-state">
+              <p>No completed interviews yet.</p>
             </div>
           `;
           return;
         }
 
-        const interviews = [];
+        const ongoingInterviews = [];
+        const completedInterviews = [];
+        
         snapshot.forEach((doc) => {
           const data = doc.data();
-          interviews.push({
+          const interview = {
             id: doc.id,
             name: data.intervieweeName || doc.id,
             intervieweeInfo: data.intervieweeInfo || '',
             updatedAt: data.updatedAt?.toDate?.() || new Date(),
-            createdAt: data.createdAt?.toDate?.() || new Date()
-          });
+            createdAt: data.createdAt?.toDate?.() || new Date(),
+            isCompleted: data.isCompleted || false
+          };
+          
+          if (interview.isCompleted) {
+            completedInterviews.push(interview);
+          } else {
+            ongoingInterviews.push(interview);
+          }
         });
 
-        // Render interviews
-        container.innerHTML = '';
-        if (interviews.length === 0) {
-          container.innerHTML = `
-            <div class="empty-state">
-              <p>No interviews yet.</p>
-              <p>Click "New Interview" to get started!</p>
-            </div>
-          `;
-        } else {
-          const grid = document.createElement('div');
-          grid.className = 'interviews-grid';
-          
-          interviews.forEach((interview) => {
-            const card = document.createElement('div');
-            card.className = 'interview-card';
-            card.addEventListener('click', () => {
-              window.location.href = `reading-page.html?interviewId=${encodeURIComponent(interview.id)}`;
-            });
-
-            const name = document.createElement('div');
-            name.className = 'interview-name';
-            name.textContent = interview.name;
-
-            const meta = document.createElement('div');
-            meta.className = 'interview-meta';
-            if (interview.intervieweeInfo) {
-              const infoPreview = interview.intervieweeInfo.length > 100 
-                ? interview.intervieweeInfo.substring(0, 100) + '...'
-                : interview.intervieweeInfo;
-              meta.textContent = infoPreview;
-            }
-
-            const date = document.createElement('div');
-            date.className = 'interview-date';
-            date.textContent = `Last updated: ${interview.updatedAt.toLocaleDateString()} ${interview.updatedAt.toLocaleTimeString()}`;
-
-            card.appendChild(name);
-            if (interview.intervieweeInfo) {
-              card.appendChild(meta);
-            }
-            card.appendChild(date);
-            grid.appendChild(card);
-          });
-
-          container.appendChild(grid);
-        }
+        // Render ongoing interviews
+        renderInterviewSection(ongoingContainer, ongoingInterviews, false);
+        
+        // Render completed interviews
+        renderInterviewSection(completedContainer, completedInterviews, true);
       } catch (error) {
         console.error('Error loading interviews:', error);
-        container.innerHTML = `
+        ongoingContainer.innerHTML = `
+          <div class="empty-state">
+            <p>Error loading interviews. Please try again.</p>
+          </div>
+        `;
+        completedContainer.innerHTML = `
           <div class="empty-state">
             <p>Error loading interviews. Please try again.</p>
           </div>
         `;
       }
+    }
+
+    function renderInterviewSection(container, interviews, isCompleted) {
+      container.innerHTML = '';
+      
+      if (interviews.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <p>${isCompleted ? 'No completed interviews yet.' : 'No ongoing interviews yet.'}</p>
+          </div>
+        `;
+        return;
+      }
+
+      const grid = document.createElement('div');
+      grid.className = 'interviews-grid';
+      
+      interviews.forEach((interview) => {
+        const card = document.createElement('div');
+        card.className = 'interview-card' + (isCompleted ? ' completed' : '');
+        
+        // Both ongoing and completed interviews are clickable, but go to different pages
+        card.addEventListener('click', () => {
+          if (isCompleted) {
+            window.location.href = `interview-reflection.html?interviewId=${encodeURIComponent(interview.id)}`;
+          } else {
+            window.location.href = `reading-page.html?interviewId=${encodeURIComponent(interview.id)}`;
+          }
+        });
+
+        const name = document.createElement('div');
+        name.className = 'interview-name';
+        name.textContent = interview.name;
+
+        const meta = document.createElement('div');
+        meta.className = 'interview-meta';
+        if (interview.intervieweeInfo) {
+          const infoPreview = interview.intervieweeInfo.length > 100 
+            ? interview.intervieweeInfo.substring(0, 100) + '...'
+            : interview.intervieweeInfo;
+          meta.textContent = infoPreview;
+        }
+
+        const date = document.createElement('div');
+        date.className = 'interview-date';
+        date.textContent = `Last updated: ${interview.updatedAt.toLocaleDateString()} ${interview.updatedAt.toLocaleTimeString()}`;
+
+        card.appendChild(name);
+        if (interview.intervieweeInfo) {
+          card.appendChild(meta);
+        }
+        card.appendChild(date);
+        grid.appendChild(card);
+      });
+
+      container.appendChild(grid);
     }
 
     // New interview button

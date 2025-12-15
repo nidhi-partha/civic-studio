@@ -63,13 +63,47 @@ import { callOpenAI } from './openai-api.js';
     trash: 'icons/trash-icon.png',
     redo: 'icons/redo.png',
     micClicked: 'icons/clicked-mic-icon.png',
-    mic: 'icons/mic-icon.png'
+    mic: 'icons/mic-icon.png',
+    loading: 'icons/loading-spinner.gif'
   };
 
   // --- DOM Elements Cache ---
   let elements = {};
 
   window.addEventListener("load", init);
+
+  /**
+   * Shows loading overlay with optional message
+   */
+  function showLoadingOverlay(message = 'Loading...') {
+    const overlay = id('loading-overlay');
+    const textElement = overlay?.querySelector('.loading-text');
+    if (overlay) {
+      if (textElement) textElement.textContent = message;
+      overlay.style.display = 'flex';
+    }
+  }
+
+  /**
+   * Updates loading overlay message
+   */
+  function updateLoadingText(message) {
+    const overlay = id('loading-overlay');
+    const textElement = overlay?.querySelector('.loading-text');
+    if (textElement) {
+      textElement.textContent = message;
+    }
+  }
+
+  /**
+   * Hides loading overlay
+   */
+  function hideLoadingOverlay() {
+    const overlay = id('loading-overlay');
+    if (overlay) {
+      overlay.style.display = 'none';
+    }
+  }
 
   /**
    * Initializes the application when the page loads
@@ -88,17 +122,29 @@ import { callOpenAI } from './openai-api.js';
       }
       currentUser = user;
   
-      // 1) load remote saved state (if any)
-      await loadStateFromFirestore();
+      // Show loading overlay while loading state
+      showLoadingOverlay('Generating interview...');
   
-      // 2) now build UI from state
+      try {
+        // 1) load remote saved state (if any)
+        await loadStateFromFirestore();
+  
+        // 2) now build UI from state
     setupUI();
 
-      applyModeUIFromState();
+        applyModeUIFromState();
 
-      rebuildAllBlocksFromState();
-  
-      try { switchToInterviewTab(); } catch (e) {}
+        rebuildAllBlocksFromState();
+    
+        try { switchToInterviewTab(); } catch (e) {}
+      } catch (error) {
+        console.error('Error loading state:', error);
+      } finally {
+        // Hide loading overlay after everything is set up
+        setTimeout(() => {
+          hideLoadingOverlay();
+        }, 100);
+      }
     });
 
     if (elements.brainstormTextarea) {
@@ -151,19 +197,24 @@ import { callOpenAI } from './openai-api.js';
   
 
   function rebuildAllBlocksFromState() {
-    // Interview Q/A blocks - rebuild answered questions first, then unanswered
-    rebuildInterviewBlocks();
-  
-    // Brainstorm Q/A blocks (if you want them visible)
-    if (elements.brainstormQAContainer && Array.isArray(state.brainstormTranscript) && state.brainstormTranscript.length > 0) {
-      renderTranscriptBlocks(elements.brainstormQAContainer, state.brainstormTranscript, 'brainstorm');
-    }
-  
-    // Reflection Q/A blocks - always populate if there's any reflection transcript
-    const reflectionSection = id('reflectionBlockSection');
-    if (reflectionSection && Array.isArray(state.reflectionTranscript) && state.reflectionTranscript.length > 0) {
-      renderTranscriptBlocks(reflectionSection, state.reflectionTranscript, 'reflection');
-    }
+    // Use requestAnimationFrame to batch DOM updates
+    requestAnimationFrame(() => {
+      // Interview Q/A blocks - rebuild answered questions first, then unanswered
+      rebuildInterviewBlocks();
+    
+      // Brainstorm Q/A blocks (if you want them visible)
+      const hasBrainstorm = Array.isArray(state.brainstormTranscript) && state.brainstormTranscript.length > 0;
+      if (elements.brainstormQAContainer && hasBrainstorm) {
+        renderTranscriptBlocks(elements.brainstormQAContainer, state.brainstormTranscript, 'brainstorm');
+      }
+    
+      // Reflection Q/A blocks - always populate if there's any reflection transcript
+      const hasReflection = Array.isArray(state.reflectionTranscript) && state.reflectionTranscript.length > 0;
+      const reflectionSection = id('reflectionBlockSection');
+      if (reflectionSection && hasReflection) {
+        renderTranscriptBlocks(reflectionSection, state.reflectionTranscript, 'reflection');
+      }
+    });
   }
 
   /**
@@ -235,6 +286,9 @@ import { callOpenAI } from './openai-api.js';
       const s = data.readingPageState;
       if (!s) return;
   
+      // Restore isCompleted state
+      state.isCompleted = data.isCompleted || false;
+
       // Restore your state fields (only the ones you care about right now)
       state.inBrainstormMode = !!s.inBrainstormMode;
       state.inReflectionMode = !!s.inReflectionMode;
@@ -301,6 +355,7 @@ import { callOpenAI } from './openai-api.js';
       inputMode: state.data?.inputMode || 'article',
       selectedPersonalityIndex: state.personalityIndex ?? 2,
       voiceName: state.voiceName || 'en-US-Neural2-D',
+      isCompleted: state.isCompleted || false,
   
       readingPageState: {
         inBrainstormMode: !!state.inBrainstormMode,
@@ -454,8 +509,7 @@ import { callOpenAI } from './openai-api.js';
     const intervieweeButton = id("intervieweeButton");
     const questionTipsIcon = id("questionTipsIcon");
     const questionTipsButton = id("questionTipsButton");
-    const newIntervieweeButton = id("newIntervieweeButton");
-    const createBlogButton = id("createBlogButton");
+    const doneInterviewButton = id("doneInterviewButton");
     
     if (readArticleIcon) readArticleIcon.addEventListener("click", displayArticleText);
     if (readArticleButton) readArticleButton.addEventListener("click", displayArticleText);
@@ -463,8 +517,7 @@ import { callOpenAI } from './openai-api.js';
     if (intervieweeButton) intervieweeButton.addEventListener("click", displayIntervieweeInfo);
     if (questionTipsIcon) questionTipsIcon.addEventListener("click", displayQuestionTips);
     if (questionTipsButton) questionTipsButton.addEventListener("click", displayQuestionTips);
-    if (newIntervieweeButton) newIntervieweeButton.addEventListener('click', handleNewInterviewee);
-    if (createBlogButton) createBlogButton.addEventListener('click', handleCreateBlog);
+    if (doneInterviewButton) doneInterviewButton.addEventListener('click', handleDoneInterview);
 
     // Profile menu dropdown functionality
     const profileBtn = id('profile-btn');
@@ -667,7 +720,6 @@ import { callOpenAI } from './openai-api.js';
    * Starts the interview mode
    */
   async function startInterview() {
-    hideBottomBarElements();
     const brainstormText = elements.brainstormTextarea.value.trim();
 
     if (!brainstormText) {
@@ -675,45 +727,87 @@ import { callOpenAI } from './openai-api.js';
       return;
     }
 
-    // Ensure state.data exists
-    if (!state.data) {
-      loadStoredData();
-    }
-    if (!state.data) {
-      alert("Error: Interview data not found. Please restart the interview.");
-      return;
-    }
-    const { intervieweeName, articleText, topicText, inputMode } = state.data;
-    const summaryPrompt = (inputMode === 'article' && articleText)
-      ? `Can you create a summary of the responses and characteristics of ${intervieweeName} from this article: ${articleText}`
-      : `Create a concise background and likely perspective for ${intervieweeName} for an interview about the topic: "${topicText}". Include role/expertise and key traits in 4-6 sentences.`;
-    state.intervieweeSummary = await callGemini(summaryPrompt);
+    // Show loading overlay immediately
+    showLoadingOverlay('Preparing interview...');
+
+    try {
+      // Change state immediately to prevent UI flicker
+      state.inBrainstormMode = false;
+      applyModeUIFromState();
+
+      hideBottomBarElements();
+
+      // Ensure state.data exists
+      if (!state.data) {
+        loadStoredData();
+      }
+      if (!state.data) {
+        hideLoadingOverlay();
+        alert("Error: Interview data not found. Please restart the interview.");
+        // Revert state
+        state.inBrainstormMode = true;
+        applyModeUIFromState();
+        return;
+      }
+      
+      const { intervieweeName, articleText, topicText, inputMode } = state.data;
+      const summaryPrompt = (inputMode === 'article' && articleText)
+        ? `Can you create a summary of the responses and characteristics of ${intervieweeName} from this article: ${articleText}`
+        : `Create a concise background and likely perspective for ${intervieweeName} for an interview about the topic: "${topicText}". Include role/expertise and key traits in 4-6 sentences.`;
+      
+      updateLoadingText('Generating interview...');
+      state.intervieweeSummary = await callGemini(summaryPrompt);
 
     // identify questions based on question marks in brainstorm text
     const questions = await identifyQuestions(brainstormText);
 
     if (questions.length > 0) {
-      state.inBrainstormMode = false;
+        // Save the list of all questions (they start as unanswered)
+        state.unansweredQuestions = [...questions];
 
-      // Save the list of all questions (they start as unanswered)
-      state.unansweredQuestions = [...questions];
-
+        updateLoadingText('Setting up interview questions...');
+        
+        // Use requestAnimationFrame to batch DOM updates
+        await new Promise(resolve => {
+          requestAnimationFrame(() => {
       questions.forEach((question) => {
         createQAblock(question, elements.qaContainer);
       });
+            resolve();
+          });
+        });
+
       displayIntervieweeInfo();
-      if (state.data && state.data.intervieweeImage) {
+        if (state.data && state.data.intervieweeImage) {
       elements.intervieweeAvatar.src = state.data.intervieweeImage;
-      }
+        }
       elements.interviewContent.style.display = 'block';
       elements.doneButton.style.display = 'none';
       elements.brainstormTextarea.classList.remove('expanded');
+        
+        scheduleSave();
     } else {
+        hideLoadingOverlay();
       alert("No valid questions found. Please try again.");
+        // Revert state
+        state.inBrainstormMode = true;
+        applyModeUIFromState();
+        return;
+      }
+    } catch (error) {
+      console.error('Error starting interview:', error);
+      hideLoadingOverlay();
+      alert("An error occurred while starting the interview. Please try again.");
+      // Revert state
+      state.inBrainstormMode = true;
+      applyModeUIFromState();
+      return;
     }
-    state.inBrainstormMode = false;
-    applyModeUIFromState();
-    scheduleSave();
+
+    // Hide loading overlay after a brief delay to ensure smooth transition
+    setTimeout(() => {
+      hideLoadingOverlay();
+    }, 100);
   }
 
   /**
@@ -749,22 +843,39 @@ import { callOpenAI } from './openai-api.js';
     const pairs = transcriptToPairs(transcriptArray);
   
     pairs.forEach((pair, pairIdx) => {
-      const { qaBlock, questionElement, answerElement } = createQAblock(pair.q, container);
+      // For reflection mode, create reflection-style blocks
+      if (mode === 'reflection') {
+        createReflectionBlockFromTranscript(container, pair.q, pair.a, pairIdx, pairs.length);
+      } else {
+        // For interview and brainstorm modes, use regular Q&A blocks
+        const { qaBlock, questionElement, answerElement } = createQAblock(pair.q, container);
   
-      // Fill in saved content
-      questionElement.innerText = `Q: ${pair.q}`;
-      answerElement.innerText = `A: ${pair.a}`;
+        // Fill in saved content
+        questionElement.innerText = `Q: ${pair.q}`;
+        answerElement.innerText = `A: ${pair.a}`;
   
-      // Mark transcript mapping (2 strings per pair)
-      const txIndex = pairIdx * 2;
-      qaBlock.dataset.txMode = mode;
-      qaBlock.dataset.txIndex = String(txIndex);
+        // Mark transcript mapping (2 strings per pair)
+        const txIndex = pairIdx * 2;
+        qaBlock.dataset.txMode = mode;
+        qaBlock.dataset.txIndex = String(txIndex);
   
-      // Prevent auto “click-to-record” on restored blocks
-      qaBlock.dataset.frozen = 'true';
-      qaBlock.classList.add('clicked');
-      qaBlock.style.backgroundColor = '#edf2f7';
+        // Prevent auto "click-to-record" on restored blocks
+        qaBlock.dataset.frozen = 'true';
+        qaBlock.classList.add('clicked');
+        qaBlock.style.backgroundColor = '#edf2f7';
+      }
     });
+    
+    // For reflection mode, add module buttons after all blocks (matching addReflectionAndRedoPrompt behavior)
+    if (mode === 'reflection' && pairs.length > 0) {
+      const buttonContainer = createModuleButtonContainer();
+      if (buttonContainer) {
+        // Remove existing button container if present
+        const existingButtons = container.querySelector('.button-container');
+        if (existingButtons) existingButtons.remove();
+        container.appendChild(buttonContainer);
+      }
+    }
   }
 
   /**
@@ -886,7 +997,7 @@ import { callOpenAI } from './openai-api.js';
 
     followUpButton.addEventListener('click', () => handleFollowUp(iconContainer, additionalQuestionsDiv, followUpButton));
     commentButton.addEventListener('click', () => handleComment(iconContainer, notesDiv));
-    pauseBut.addEventListener('click', () => handlePausePlay(pauseBut, answerElement));
+    pauseBut.addEventListener('click', () => handlePausePlay(pauseBut, { highlightEl: answerElement }));
     redoButton.addEventListener('click', () => handleRedo(qaBlock, answerElement, questionElement));
     trashButton.addEventListener('click', () => handleTrash(qaBlock, iconContainer, additionalQuestionsDiv));
   }
@@ -938,9 +1049,14 @@ import { callOpenAI } from './openai-api.js';
   }
 
   /**
-   * Handles pause/play toggle for audio
+   * Handles pause/play toggle for audio (unified for interview and reflection blocks)
+   * @param {HTMLElement} pauseBut - The pause/play button element
+   * @param {Object} options - Configuration object
+   * @param {string} [options.text] - The text to speak (optional if highlightEl is provided)
+   * @param {HTMLElement} [options.highlightEl] - The element to highlight during speech (optional, text will be extracted from it if text not provided)
+   * @param {string} [options.voiceName] - Voice name to use (defaults to state.voiceName)
    */
-  async function handlePausePlay(pauseBut, answerElement) {
+  async function handlePausePlay(pauseBut, options) {
     try {
       // stops repeated clicks while loading
       if (pauseBut.dataset.loading === 'true') return;
@@ -959,22 +1075,61 @@ import { callOpenAI } from './openai-api.js';
         return;
       }
 
-      // otherwise it is not playing so we want to play it
-      const responseText = (answerElement && answerElement.innerText) ? answerElement.innerText.replace(/^A:\s*/i, '').trim() : '';
+      // Extract text - support both direct text and element-based extraction
+      let responseText = '';
+      let highlightElement = options.highlightEl;
+      
+      if (options.text) {
+        // Direct text provided
+        responseText = options.text;
+      } else if (options.highlightEl && options.highlightEl.innerText) {
+        // Extract from element (for backward compatibility)
+        responseText = options.highlightEl.innerText.replace(/^[QA]:\s*/i, '').trim();
+        highlightElement = options.highlightEl;
+      } else {
+        // Try to find text element if not provided
+        highlightElement = pauseBut.closest('.reflection-block')?.querySelector('p') ||
+                          pauseBut.closest('.qa-block')?.querySelector('p') ||
+                          highlightElement;
+        if (highlightElement && highlightElement.innerText) {
+          responseText = highlightElement.innerText.replace(/^[QA]:\s*/i, '').trim();
+        }
+      }
+
       // if there is no response text, return
       if (!responseText) return;
+
+      // Stop any currently playing audio (from state.audio or other pause buttons)
+      // This ensures only one audio plays at a time
+      if (state.audio && !state.audio.paused && !state.audio.ended) {
+        state.audio.pause();
+        state.audio = null;
+      }
+      
+      // Stop all other pause buttons that might be playing
+      const allPauseButtons = document.querySelectorAll('img[alt="Pause"]');
+      allPauseButtons.forEach(btn => {
+        if (btn !== pauseBut && btn._audio && !btn._audio.paused && !btn._audio.ended) {
+          btn._audio.pause();
+          btn.dataset.playing = 'false';
+          btn.src = IMAGES.play;
+          btn._pausedTime = btn._audio.currentTime || 0;
+        }
+      });
 
       pauseBut.dataset.loading = 'true';
       pauseBut.src = IMAGES.pause;
 
+      const voiceName = options.voiceName || state.voiceName;
+
       // if this is the first time playing this block, synthesize audio (or its been reset)
       if (!pauseBut._audio || pauseBut._audioText !== responseText) {
         try {
-          const audioContent = await synthesizeSpeech(responseText, state.voiceName);
+          const audioContent = await synthesizeSpeech(responseText, voiceName);
           pauseBut._audioText = responseText;
           pauseBut._audio = new Audio(`data:audio/mp3;base64,${audioContent}`);
         } catch (err) {
-          console.error('Error synthesizing audio for block:', err);
+          console.error('Error synthesizing audio:', err);
           pauseBut.dataset.loading = 'false';
           pauseBut.src = IMAGES.play;
           return;
@@ -984,16 +1139,16 @@ import { callOpenAI } from './openai-api.js';
       // otherwise start from the paused time
       pauseBut._audio.currentTime = pauseBut._pausedTime || 0;
       
-      // Start word highlighting if answerElement is available
-      if (answerElement && pauseBut._audioText) {
-        highlightWordsDuringSpeech(answerElement, pauseBut._audio, pauseBut._audioText);
+      // Start word highlighting if highlight element is available
+      if (highlightElement && pauseBut._audioText) {
+        highlightWordsDuringSpeech(highlightElement, pauseBut._audio, pauseBut._audioText);
       }
       
       pauseBut._audio.play().then(() => {
         pauseBut.dataset.playing = 'true';
         pauseBut.dataset.loading = 'false';
       }).catch(err => {
-        console.error('Error playing per-block audio:', err);
+        console.error('Error playing audio:', err);
         pauseBut.dataset.playing = 'false';
         pauseBut.dataset.loading = 'false';
         pauseBut.src = IMAGES.play;
@@ -1320,14 +1475,30 @@ import { callOpenAI } from './openai-api.js';
    * Builds interviewee response prompt
    */
   function buildIntervieweePrompt(userQuery, personality, intervieweeName, intervieweeInfo) {
-    return `You are ${intervieweeName}. \nHere is an some info on them: \n${state.intervieweeSummary}. \n
-    Act like this person under whatever circumstances. \n You are currently an interviewee
-    in an interview conducted by a high school journalist. You start off ${personality}
-    but become better as the conversation progresses and the interviewer builds trust
-     with you. Adapt your responses based on the conversation history here: ${state.fullTranscript}.
+    console.log(personality);
+    return `You are ${intervieweeName}. \nHere is an some info on them: \n${state.intervieweeSummary}. 
+    \n
+    Act like this person under whatever circumstances. 
+    \n You are currently an interviewee in an interview conducted by a high school journalist. 
+    You start off ${personality} but become better as the conversation progresses and the interviewer builds trust
+     with you. \n
+
+     First analyze the transcript. If the transcript is empty your personality should be strong, if the user 
+     has talked with you for more than one question and seems to have given good questions and worked well 
+     with the personality the personality should be softer. If the user gave terrible responses than the 
+     personality should be the same or worse. \n
+
+     Adapt your responses based on the conversation history here: ${state.fullTranscript}. \n
+
+     Make sure to ignore any notes the student made.
+
+     \n
+
       Reply to the journalist question/comment like ${intervieweeInfo} (you may create
       fake details if necessary) when needed. Your answers shouldn't be longer than
-      three paragraphs! \nHere is what the journalist says: ${userQuery}`;
+      three paragraphs, but can be shorter if needed! Remember to talk like a real person, that means you may have
+      uhs and other filler words or repeat yourself sometimes. 
+      \nHere is what the journalist says: ${userQuery}`;
   }
 
   /**
@@ -1557,8 +1728,21 @@ import { callOpenAI } from './openai-api.js';
         clearInterval(highlightInterval);
         highlightInterval = null;
       }
-      // Restore original text without highlighting
-      textElement.innerText = originalText;
+      // Remove highlighting spans but keep the HTML structure (including <br> tags)
+      if (textElement.innerHTML) {
+        // Remove all word-highlight spans but keep their content
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = textElement.innerHTML;
+        const highlightSpans = tempDiv.querySelectorAll('.word-highlight');
+        highlightSpans.forEach(span => {
+          const parent = span.parentNode;
+          while (span.firstChild) {
+            parent.insertBefore(span.firstChild, span);
+          }
+          parent.removeChild(span);
+        });
+        textElement.innerHTML = tempDiv.innerHTML;
+      }
       currentWordIndex = -1;
     };
 
@@ -1677,7 +1861,7 @@ import { callOpenAI } from './openai-api.js';
   processResponse(question, answerElement, questionElement, qaBlock);
 
     commentButton.addEventListener('click', () => handleBrainstormComment(iconContainer, container));
-    pauseBut.addEventListener('click', () => handlePausePlay(pauseBut, answerElement));
+    pauseBut.addEventListener('click', () => handlePausePlay(pauseBut, { highlightEl: answerElement }));
   }
 
   /**
@@ -1806,14 +1990,17 @@ import { callOpenAI } from './openai-api.js';
           // Remove any existing loading nodes
           const existing = reflectionSection.querySelector('.reflection-loading');
           if (existing) existing.remove();
-          // If this call is from a module button (feedbackType is a function) or section is empty, show loading
-          // But don't clear existing reflection transcript blocks - just show loading overlay
-          if (typeof feedbackType === 'function' || reflectionSection.children.length === 0) {
-            // Only clear if there are no transcript blocks yet
-            const hasTranscriptBlocks = reflectionSection.querySelectorAll('.qa-block').length > 0;
-            if (!hasTranscriptBlocks) {
+          
+          // If this call is from a module button (feedbackType is a function), show loading below existing blocks
+          if (typeof feedbackType === 'function') {
+            // Don't clear existing reflection blocks - just append loading placeholder below them
+            const loadingDiv = document.createElement('div');
+            loadingDiv.className = 'reflection-loading';
+            loadingDiv.innerText = 'Loading feedback...';
+            reflectionSection.appendChild(loadingDiv);
+          } else if (reflectionSection.children.length === 0) {
+            // Only clear and show loading if section is completely empty (first time)
             reflectionSection.innerHTML = '';
-            }
             const loadingDiv = document.createElement('div');
             loadingDiv.className = 'reflection-loading';
             loadingDiv.innerText = 'Loading feedback...';
@@ -1837,24 +2024,10 @@ import { callOpenAI } from './openai-api.js';
         console.log(state.fullTranscript);
         feedback = await generalFeedback(state.fullTranscript);
       }
-      
+
       // Save feedback to reflection transcript with module name as question
       state.reflectionTranscript.push(`Q: ${moduleName}`, `A: ${feedback}`);
       scheduleSave();
-
-      const audioContent = await synthesizeSpeech(feedback, 'en-US-Neural2-D');
-      if (audioContent) {
-        state.audio = new Audio(`data:audio/mp3;base64,${audioContent}`);
-        
-        // Find feedback text element for highlighting (from the most recently created feedback block)
-        const reflectionSection = id('reflectionBlockSection');
-        const feedbackTextElement = reflectionSection?.querySelector('.qa-block p');
-        if (feedbackTextElement) {
-          highlightWordsDuringSpeech(feedbackTextElement, state.audio, feedback);
-        }
-        
-        state.audio.play();
-      }
 
       // Remove loading placeholder
       const reflectionSection = id('reflectionBlockSection');
@@ -1999,15 +2172,82 @@ import { callOpenAI } from './openai-api.js';
     } catch (e) { }
 
     if (reflectionContainer && reflectionSection) {
-      const feedbackBlock = createFeedbackBlock(feedback);
-      const iconContainer = createReflectionIconContainer(feedback);
-      const buttonContainer = createModuleButtonContainer();
-
+      // Create the reflection block container
       const blockDiv = document.createElement('div');
       blockDiv.classList.add('reflection-block');
-      blockDiv.appendChild(feedbackBlock);
-      blockDiv.appendChild(iconContainer);
-      blockDiv.appendChild(buttonContainer);
+
+      // Create header with collapse button
+      const headerDiv = document.createElement('div');
+      headerDiv.classList.add('reflection-block-header');
+      headerDiv.style.display = 'flex';
+      headerDiv.style.alignItems = 'center';
+      headerDiv.style.cursor = 'pointer';
+      headerDiv.style.marginBottom = '10px';
+      headerDiv.style.padding = '5px';
+      headerDiv.style.borderRadius = '5px';
+      headerDiv.style.userSelect = 'none';
+
+      const collapseIcon = document.createElement('span');
+      collapseIcon.innerText = '▼';
+      collapseIcon.style.marginRight = '10px';
+      collapseIcon.style.fontSize = '14px';
+      collapseIcon.style.transition = 'transform 0.2s';
+      collapseIcon.classList.add('collapse-icon');
+
+      const headerTitle = document.createElement('h4');
+      headerTitle.innerText = "Feedback:";
+      headerTitle.style.margin = '0';
+      headerTitle.style.flex = '1';
+
+      headerDiv.appendChild(collapseIcon);
+      headerDiv.appendChild(headerTitle);
+      blockDiv.appendChild(headerDiv);
+
+      // Create collapsible content container
+      const contentDiv = document.createElement('div');
+      contentDiv.classList.add('reflection-block-content');
+      contentDiv.style.display = 'block';
+
+      const feedbackBlock = createFeedbackBlock(feedback);
+      
+      // Create icon container with comment and pause buttons
+      // Use highlightEl instead of text so highlighting works properly
+      const iconContainer = document.createElement('div');
+      iconContainer.classList.add('icon-container');
+
+      const commentButton = createIcon(IMAGES.comment, 'Add Comment', 'Note');
+      const pauseBut = createIcon(IMAGES.pause, 'Pause', 'Pause');
+
+      iconContainer.appendChild(commentButton);
+      iconContainer.appendChild(pauseBut);
+
+      // Find the feedback text element for highlighting
+      const feedbackTextElement = feedbackBlock.querySelector('p');
+      
+      commentButton.addEventListener('click', () => handleReflectionComment(iconContainer));
+      pauseBut.addEventListener('click', () => handlePausePlay(pauseBut, { highlightEl: feedbackTextElement }));
+
+      const buttonContainer = createModuleButtonContainer();
+
+      contentDiv.appendChild(feedbackBlock);
+      contentDiv.appendChild(iconContainer);
+      contentDiv.appendChild(buttonContainer);
+
+      blockDiv.appendChild(contentDiv);
+
+      // Add collapse/expand functionality
+      headerDiv.addEventListener('click', () => {
+        const isCollapsed = contentDiv.style.display === 'none';
+        if (isCollapsed) {
+          contentDiv.style.display = 'block';
+          collapseIcon.innerText = '▼';
+          collapseIcon.style.transform = 'rotate(0deg)';
+        } else {
+          contentDiv.style.display = 'none';
+          collapseIcon.innerText = '▶';
+          collapseIcon.style.transform = 'rotate(-90deg)';
+        }
+      });
 
       reflectionSection.appendChild(blockDiv);
 
@@ -2185,9 +2425,100 @@ import { callOpenAI } from './openai-api.js';
     iconContainer.appendChild(pauseBut);
 
     commentButton.addEventListener('click', () => handleReflectionComment(iconContainer));
-    pauseBut.addEventListener('click', () => handleReflectionPausePlay(pauseBut, feedback));
+    pauseBut.addEventListener('click', () => handlePausePlay(pauseBut, { text: feedback }));
 
     return iconContainer;
+  }
+
+  /**
+   * Creates a reflection block from transcript data (for rendering saved reflection blocks)
+   */
+  function createReflectionBlockFromTranscript(container, question, answer, pairIdx, totalPairs) {
+    // Create the reflection block container
+    const blockDiv = document.createElement('div');
+    blockDiv.classList.add('reflection-block');
+
+    // Create header with collapse button
+    const headerDiv = document.createElement('div');
+    headerDiv.classList.add('reflection-block-header');
+    headerDiv.style.display = 'flex';
+    headerDiv.style.alignItems = 'center';
+    headerDiv.style.cursor = 'pointer';
+    headerDiv.style.marginBottom = '10px';
+    headerDiv.style.padding = '5px';
+    headerDiv.style.borderRadius = '5px';
+    headerDiv.style.userSelect = 'none';
+
+    const collapseIcon = document.createElement('span');
+    collapseIcon.innerText = '▼';
+    collapseIcon.style.marginRight = '10px';
+    collapseIcon.style.fontSize = '14px';
+    collapseIcon.style.transition = 'transform 0.2s';
+    collapseIcon.classList.add('collapse-icon');
+
+    const headerTitle = document.createElement('h4');
+    headerTitle.innerText = `Q: ${question}`;
+    headerTitle.style.margin = '0';
+    headerTitle.style.flex = '1';
+
+    headerDiv.appendChild(collapseIcon);
+    headerDiv.appendChild(headerTitle);
+    blockDiv.appendChild(headerDiv);
+
+    // Create collapsible content container
+    const contentDiv = document.createElement('div');
+    contentDiv.classList.add('reflection-block-content');
+    contentDiv.style.display = 'block';
+
+    // Create feedback block (Q&A structure)
+    const feedbackBlock = document.createElement('div');
+    feedbackBlock.style.backgroundColor = '#D8E2F1';
+    feedbackBlock.style.padding = '15px';
+    feedbackBlock.style.borderRadius = '8px';
+
+    const feedbackText = document.createElement('p');
+    feedbackText.innerText = `A: ${answer}`;
+    feedbackText.style.margin = '0';
+    feedbackBlock.appendChild(feedbackText);
+
+    contentDiv.appendChild(feedbackBlock);
+
+    // Create icon container with comment and pause buttons
+    // Use highlightEl instead of text so highlighting works properly
+    const iconContainer = document.createElement('div');
+    iconContainer.classList.add('icon-container');
+
+    const commentButton = createIcon(IMAGES.comment, 'Add Comment', 'Note');
+    const pauseBut = createIcon(IMAGES.pause, 'Pause', 'Pause');
+
+    iconContainer.appendChild(commentButton);
+    iconContainer.appendChild(pauseBut);
+
+    commentButton.addEventListener('click', () => handleReflectionComment(iconContainer));
+    pauseBut.addEventListener('click', () => handlePausePlay(pauseBut, { highlightEl: feedbackText }));
+
+    contentDiv.appendChild(iconContainer);
+
+    blockDiv.appendChild(contentDiv);
+
+    // Add collapse/expand functionality
+    headerDiv.addEventListener('click', () => {
+      const isCollapsed = contentDiv.style.display === 'none';
+      if (isCollapsed) {
+        contentDiv.style.display = 'block';
+        collapseIcon.innerText = '▼';
+        collapseIcon.style.transform = 'rotate(0deg)';
+      } else {
+        contentDiv.style.display = 'none';
+        collapseIcon.innerText = '▶';
+        collapseIcon.style.transform = 'rotate(-90deg)';
+      }
+    });
+
+    // Don't add module buttons here - they're added separately after all blocks are rendered
+    // (matching the behavior in addReflectionAndRedoPrompt)
+
+    container.appendChild(blockDiv);
   }
 
   /**
@@ -2216,79 +2547,6 @@ import { callOpenAI } from './openai-api.js';
     });
   }
 
-  /**
-   * Handles pause/play in reflection mode
-   * TODO combine with handlePausePlay and edit function calls
-   */
-  async function handleReflectionPausePlay(pauseBut, feedback) {
-    try {
-      if (pauseBut.dataset.loading === 'true') return;
-
-      const isPlaying = pauseBut.dataset.playing === 'true';
-      if (isPlaying) {
-        if (pauseBut._audio) {
-          pauseBut._pausedTime = pauseBut._audio.currentTime || 0;
-          pauseBut._audio.pause();
-        }
-        pauseBut.src = IMAGES.play;
-        pauseBut.dataset.playing = 'false';
-        return;
-      }
-
-      if (!feedback) return;
-
-      // Prevent extra clicks while we synthesize/load audio
-      pauseBut.dataset.loading = 'true';
-      pauseBut.src = IMAGES.pause; // immediate visual feedback
-
-      if (!pauseBut._audio || pauseBut._audioText !== feedback) {
-        try {
-          const audioContent = await synthesizeSpeech(feedback, state.voiceName);
-          pauseBut._audioText = feedback;
-          pauseBut._audio = new Audio(`data:audio/mp3;base64,${audioContent}`);
-        } catch (err) {
-          console.error('Error synthesizing reflection audio:', err);
-          pauseBut.dataset.loading = 'false';
-          pauseBut.src = IMAGES.play;
-          return;
-        }
-      }
-
-      pauseBut._audio.currentTime = pauseBut._pausedTime || 0;
-      
-      // Find feedback text element for highlighting
-      const feedbackTextElement = pauseBut.closest('.reflection-block')?.querySelector('p') ||
-                                  pauseBut.closest('.qa-block')?.querySelector('p');
-      if (feedbackTextElement && pauseBut._audioText) {
-        highlightWordsDuringSpeech(feedbackTextElement, pauseBut._audio, pauseBut._audioText);
-      }
-      
-      pauseBut._audio.play().then(() => {
-        pauseBut.dataset.playing = 'true';
-        pauseBut.dataset.loading = 'false';
-      }).catch(err => {
-        console.error('Error playing reflection audio:', err);
-        pauseBut.dataset.playing = 'false';
-        pauseBut.dataset.loading = 'false';
-        pauseBut.src = IMAGES.play;
-      });
-
-      pauseBut._audio.onended = function () {
-        pauseBut.dataset.playing = 'false';
-        pauseBut.src = IMAGES.play;
-        pauseBut._pausedTime = 0;
-        pauseBut.dataset.loading = 'false';
-        // Cleanup highlighting
-        if (pauseBut._audio._highlightCleanup) {
-          pauseBut._audio._highlightCleanup();
-        }
-      };
-    } catch (e) {
-      console.error('handleReflectionPausePlay error', e);
-      pauseBut.dataset.loading = 'false';
-      pauseBut.src = IMAGES.play;
-    }
-  }
 
   /**
    * Creates button container for module selection
@@ -2354,6 +2612,8 @@ Be concise, specific, and tie every point to the transcript when possible.`;
     the transcript below done by a student journalist, give feedback for the
     INTERVIEWER on their overall interview performance across multiple dimensions
     (tone, question quality, power dynamics, cultural knowledge, fact-checking, ethics/privacy).
+    
+    Use quotes from the student's interview transcript to demnstrate what parts they did well and what parts they could improve on.
 
     Make sure you DO NOT
       give SPECIFIC interview questions or what the student should do. Instead guide the student to getting the answer
@@ -2728,19 +2988,15 @@ Be concise, practical, and provide exact phrasings the student can use.`;
   /**
    * Handles new interviewee selection
    */
-  function handleNewInterviewee() {
-    saveTranscript();
-    scheduleSave();
-    window.location.href = 'select-interviewee.html';
-  }
-
   /**
-   * Handles blog creation
+   * Handles marking interview as done
    */
-  function handleCreateBlog() {
+  async function handleDoneInterview() {
+    state.isCompleted = true;
     saveTranscript();
-    scheduleSave();
-    window.location.href = 'edit-article.html';
+    await saveStateToFirestore();
+    // Navigate to reflection page after marking as done
+    window.location.href = `interview-reflection.html?interviewId=${encodeURIComponent(interviewId)}`;
   }
 
   /**

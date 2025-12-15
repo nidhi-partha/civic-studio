@@ -231,6 +231,17 @@ body {
     line-height: 1.4;
 }
 
+.reflection-block h4 {
+    margin: 0 0 10px;
+    font-size: 22px;
+}
+
+.reflection-block p {
+    margin: 0;
+    font-size: 20px;
+    line-height: 1.4;
+}
+
 .qa-block:hover {
     background-color: #c9d9f0;
 }
@@ -484,7 +495,7 @@ body {
     margin: 10px;
 }
 
-.create-blog-button {
+.done-interview-button {
     background-color: #007bff;
     color: white;
     border: none;
@@ -497,7 +508,7 @@ body {
     margin-left: 10px;
 }
 
-.create-blog-button:hover {
+.done-interview-button:hover {
     background-color: #0056b3;
 }
 
@@ -612,4 +623,44 @@ body {
 
 .profile-dropdown-item.dashboard {
     color: #007BFF;
+}
+
+/* Loading overlay */
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    transition: opacity 0.3s ease;
+}
+
+.loading-spinner {
+    width: 50px;
+    height: 50px;
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #007BFF;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: 20px;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.loading-text {
+    font-family: 'Open Sans', sans-serif;
+    font-size: 18px;
+    color: #333;
+    margin: 0;
 }
