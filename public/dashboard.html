@@ -229,10 +229,25 @@
       const ongoingContainer = document.getElementById('ongoing-interviews-container');
       const completedContainer = document.getElementById('completed-interviews-container');
       
+      // Ensure user is authenticated
+      if (!currentUser || !currentUser.uid) {
+        console.error('No authenticated user');
+        window.location.href = 'login.html';
+        return;
+      }
+      
       try {
         const interviewsRef = collection(db, 'users', currentUser.uid, 'interviews');
-        const q = query(interviewsRef, orderBy('updatedAt', 'desc'));
-        const snapshot = await getDocs(q);
+        // Try query with orderBy first, fall back to simple query if it fails
+        let snapshot;
+        try {
+          const q = query(interviewsRef, orderBy('updatedAt', 'desc'));
+          snapshot = await getDocs(q);
+        } catch (orderByError) {
+          // If orderBy fails (might need index or permissions), try without it
+          console.warn('orderBy query failed, trying without orderBy:', orderByError);
+          snapshot = await getDocs(interviewsRef);
+        }
 
         if (snapshot.empty) {
           ongoingContainer.innerHTML = `
@@ -249,9 +264,7 @@
           return;
         }
 
-        const ongoingInterviews = [];
-        const completedInterviews = [];
-        
+        const allInterviews = [];
         snapshot.forEach((doc) => {
           const data = doc.data();
           const interview = {
@@ -262,7 +275,20 @@
             createdAt: data.createdAt?.toDate?.() || new Date(),
             isCompleted: data.isCompleted || false
           };
-          
+          allInterviews.push(interview);
+        });
+        
+        // Sort manually if orderBy didn't work (fallback)
+        allInterviews.sort((a, b) => {
+          const aTime = a.updatedAt.getTime ? a.updatedAt.getTime() : new Date(a.updatedAt).getTime();
+          const bTime = b.updatedAt.getTime ? b.updatedAt.getTime() : new Date(b.updatedAt).getTime();
+          return bTime - aTime; // Descending order
+        });
+        
+        // Separate into ongoing and completed
+        const ongoingInterviews = [];
+        const completedInterviews = [];
+        allInterviews.forEach(interview => {
           if (interview.isCompleted) {
             completedInterviews.push(interview);
           } else {
@@ -277,14 +303,28 @@
         renderInterviewSection(completedContainer, completedInterviews, true);
       } catch (error) {
         console.error('Error loading interviews:', error);
+        console.error('Error details:', {
+          code: error.code,
+          message: error.message,
+          currentUser: currentUser?.uid
+        });
+        
+        let errorMessage = 'Error loading interviews. Please try again.';
+        if (error.code === 'permission-denied') {
+          errorMessage = 'Permission denied. Please check your Firestore security rules allow reading from users/{uid}/interviews.';
+        } else if (error.code === 'failed-precondition') {
+          errorMessage = 'Query requires an index. Please create the required Firestore index for updatedAt.';
+        }
+        
         ongoingContainer.innerHTML = `
           <div class="empty-state">
-            <p>Error loading interviews. Please try again.</p>
+            <p>${errorMessage}</p>
+            <p style="font-size: 12px; color: #666; margin-top: 10px;">Error code: ${error.code || 'unknown'}</p>
           </div>
         `;
         completedContainer.innerHTML = `
           <div class="empty-state">
-            <p>Error loading interviews. Please try again.</p>
+            <p>${errorMessage}</p>
           </div>
         `;
       }

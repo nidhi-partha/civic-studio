@@ -152,7 +152,7 @@ function formatTranscriptForClaude(transcript) {
 
 // Generate reflection questions using Claude
 async function generateReflectionQuestions(transcriptText) {
-  const prompt = `You are an expert journalism coach helping a student reflect on their interview. Based on the following interview transcript, generate 5-7 thoughtful, probing questions that will help the student:
+  const prompt = `You are an expert journalism coach helping a student reflect on their interview. Based on the following interview transcript, generate 4-6 thoughtful, probing questions that will help the student:
 1. Identify key insights and themes from the interview
 2. Reflect on their interviewing technique and approach
 3. Consider what they learned about the interviewee
