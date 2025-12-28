@@ -1025,3 +1025,83 @@ body {
     font-weight: 700;
     color: #333;
 }
+
+/* Metacognitive questions section */
+.metacognitive-questions-section {
+    background: #ffffff;
+    border: 2px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    transition: all 0.2s ease;
+}
+
+.metacognitive-question-item {
+    margin-top: 20px;
+    margin-bottom: 20px;
+    padding: 15px;
+    border-radius: 10px;
+    background-color: #f7f9fc;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+    position: relative;
+}
+
+.metacognitive-question-item:first-child {
+    margin-top: 0;
+}
+
+.metacognitive-answer-container {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    margin-top: 12px;
+}
+
+.metacognitive-answer-input {
+    flex: 1;
+    min-height: 80px;
+    padding: 12px;
+    font-size: 14px;
+    font-family: 'Open Sans', sans-serif;
+    border: 2px solid #ddd;
+    border-radius: 8px;
+    resize: vertical;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+    line-height: 1.5;
+}
+
+.metacognitive-answer-input:focus {
+    outline: none;
+    border-color: #4a90e2;
+}
+
+.metacognitive-mic-button {
+    margin: 0;
+    padding: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 4px;
+}
+
+.metacognitive-mic-button img {
+    width: 20px;
+    height: 24px;
+    object-fit: contain;
+}
+
+
+.metacognitive-mic-button.recording {
+    opacity: 1;
+}
+
+.metacognitive-mic-button.recording img {
+    animation: pulse 1s infinite;
+}
+
+.metacognitive-question-item h4.metacognitive-question-text {
+    font-size: 18px !important;
+    font-weight: 600;
+    color: #333;
+}
