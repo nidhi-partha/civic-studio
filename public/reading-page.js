@@ -2329,13 +2329,13 @@ Respond with ONLY the JSON object, no other text.`;
     const cleanText = text.replace(/^[QA]:\s*/i, '').trim();
     if (!cleanText) return;
 
-    // Preserve the original HTML structure to maintain newlines and formatting
-    // Get the original content - use innerHTML if available, otherwise fall back to innerText
-    const originalContent = textElement.innerHTML || textElement.innerText || textElement.textContent;
-    const prefix = originalContent.match(/^[QA]:\s*/i)?.[0] || '';
+    // Store the original HTML structure BEFORE any modifications
+    // This preserves all formatting (bold, italic, lists, etc.)
+    const originalHTML = textElement.innerHTML;
     
-    // Store original text for restoration (preserving newlines by using the actual text)
+    // Store original text content for word matching
     const originalText = textElement.innerText || textElement.textContent;
+    const prefix = originalText.match(/^[QA]:\s*/i)?.[0] || '';
     
     // Split text into words (only actual words, not spaces or newlines)
     // Use a regex that matches word boundaries and captures words separately from spaces
@@ -2427,39 +2427,117 @@ Respond with ONLY the JSON object, no other text.`;
       }
     };
 
+    // Check if the original HTML has complex structure (lists, bold, etc.)
+    const hasComplexStructure = originalHTML && (
+      originalHTML.includes('<ul>') || 
+      originalHTML.includes('<ol>') || 
+      originalHTML.includes('<li>') ||
+      originalHTML.includes('<strong>') ||
+      originalHTML.includes('<b>') ||
+      originalHTML.includes('<em>') ||
+      originalHTML.includes('<h4>') ||
+      (originalHTML.match(/<div[^>]*>/g) && originalHTML.match(/<div[^>]*>/g).length > 2)
+    );
+    
+    // For complex structures, prepare HTML with word spans for highlighting
+    let preparedHTML = null;
+    let isHTMLPrepared = false;
+    
+    if (hasComplexStructure) {
+      // Create a temporary container to work with the HTML
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = originalHTML;
+      
+      // Collect all text nodes and wrap their words in spans
+      const walker = document.createTreeWalker(
+        tempDiv,
+        NodeFilter.SHOW_TEXT,
+        null,
+        false
+      );
+      
+      const textNodes = [];
+      let node;
+      while (node = walker.nextNode()) {
+        if (node.textContent.trim()) {
+          textNodes.push(node);
+        }
+      }
+      
+      // Process each text node: wrap words in spans
+      textNodes.forEach(textNode => {
+        const text = textNode.textContent;
+        const words = text.split(/(\s+)/); // Split but keep whitespace
+        const fragment = document.createDocumentFragment();
+        
+        words.forEach(word => {
+          if (word.trim()) {
+            // It's a word - wrap in span
+            const span = document.createElement('span');
+            span.className = 'word-span';
+            span.textContent = word;
+            fragment.appendChild(span);
+          } else if (word) {
+            // It's whitespace - keep as text node
+            fragment.appendChild(document.createTextNode(word));
+          }
+        });
+        
+        // Replace the text node with the fragment
+        if (textNode.parentNode) {
+          textNode.parentNode.replaceChild(fragment, textNode);
+        }
+      });
+      
+      preparedHTML = tempDiv.innerHTML;
+    }
+
     // Function to render text with current word highlighted
     const renderHighlightedText = () => {
-      if (wordMatches.length === 0) return;
+      if (wordMatches.length === 0 || currentWordIndex < 0) return;
       
+      // For complex HTML structures, highlight words within the structure
+      if (hasComplexStructure && preparedHTML) {
+        // Initialize the HTML with word spans on first render
+        if (!isHTMLPrepared) {
+          textElement.innerHTML = preparedHTML;
+          isHTMLPrepared = true;
+        }
+        
+        // Find and highlight the current word
+        const allWordSpans = textElement.querySelectorAll('.word-span');
+        allWordSpans.forEach((span, index) => {
+          if (index === currentWordIndex && index < wordMatches.length) {
+            span.classList.add('word-highlight');
+          } else {
+            span.classList.remove('word-highlight');
+          }
+        });
+        return;
+      }
+      
+      // For simple text, use word-by-word highlighting
       let html = prefix;
       let lastIndex = 0;
       
       // Helper function to escape HTML and convert newlines to <br>
-      // Use a placeholder to avoid escaping <br> tags
       const processText = (text) => {
-        // First, replace newlines with a placeholder
         const placeholder = '___NEWLINE_PLACEHOLDER___';
         const withPlaceholder = text.replace(/\n/g, placeholder);
-        // Then escape HTML
         const escaped = withPlaceholder
           .replace(/&/g, '&amp;')
           .replace(/</g, '&lt;')
           .replace(/>/g, '&gt;');
-        // Finally, replace placeholder with <br>
         return escaped.replace(new RegExp(placeholder, 'g'), '<br>');
       };
       
       // Build HTML by inserting highlighted spans for the current word
-      // Preserve all whitespace including newlines by converting them to <br> tags
       wordMatches.forEach((wordMatch, index) => {
-        // Add any text before this word (including spaces and newlines)
         if (wordMatch.startIndex > lastIndex) {
           const beforeText = cleanText.substring(lastIndex, wordMatch.startIndex);
           html += processText(beforeText);
         }
         
-        // Add the word (highlighted if it's the current word)
-        // Escape the word text for HTML safety (words shouldn't have newlines, but be safe)
         const escapedWord = wordMatch.word
           .replace(/&/g, '&amp;')
           .replace(/</g, '&lt;')
@@ -2473,7 +2551,6 @@ Respond with ONLY the JSON object, no other text.`;
         lastIndex = wordMatch.endIndex;
       });
       
-      // Add any remaining text after the last word (including newlines)
       if (lastIndex < cleanText.length) {
         const afterText = cleanText.substring(lastIndex);
         html += processText(afterText);
@@ -2482,27 +2559,19 @@ Respond with ONLY the JSON object, no other text.`;
       textElement.innerHTML = html;
     };
 
-    // Function to clear highlighting
+    // Function to clear highlighting and restore original formatting
     const clearHighlight = () => {
       if (highlightInterval) {
         clearInterval(highlightInterval);
         highlightInterval = null;
       }
-      // Remove highlighting spans but keep the HTML structure (including <br> tags)
-      if (textElement.innerHTML) {
-        // Remove all word-highlight spans but keep their content
-        const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = textElement.innerHTML;
-        const highlightSpans = tempDiv.querySelectorAll('.word-highlight');
-        highlightSpans.forEach(span => {
-          const parent = span.parentNode;
-          while (span.firstChild) {
-            parent.insertBefore(span.firstChild, span);
-          }
-          parent.removeChild(span);
-        });
-        textElement.innerHTML = tempDiv.innerHTML;
+      // Remove any active reading class
+      textElement.classList.remove('feedback-reading-active');
+      // Restore the original HTML to bring back all formatting (bold, lists, etc.)
+      if (originalHTML) {
+        textElement.innerHTML = originalHTML;
       }
+      isHTMLPrepared = false;
       currentWordIndex = -1;
     };
 
@@ -3691,40 +3760,66 @@ Respond with ONLY the JSON object, no other text.`;
     const feedbackCard = document.createElement('div');
     feedbackCard.classList.add('area-feedback-card');
 
-    // Header with module name (no rating in new format)
+    // Header with module name and play button
     const header = document.createElement('div');
     header.classList.add('area-feedback-header');
+    header.style.display = 'flex';
+    header.style.alignItems = 'center';
+    header.style.justifyContent = 'space-between';
 
     const title = document.createElement('h3');
     title.classList.add('area-feedback-title');
     title.textContent = moduleName;
+    title.style.margin = '0';
 
     header.appendChild(title);
+
+    // Add play button in header
+    const playButton = createIcon(IMAGES.play, 'Play', 'Play feedback aloud');
+    playButton.dataset.playing = 'false';
+    playButton.style.cursor = 'pointer';
+    playButton.style.width = '24px';
+    playButton.style.height = '24px';
+    playButton.style.marginLeft = 'auto';
+    
+    header.appendChild(playButton);
     feedbackCard.appendChild(header);
+
+    // Create wrapper div for all feedback content (for highlighting)
+    const feedbackContentWrapper = document.createElement('div');
+    feedbackContentWrapper.classList.add('feedback-content-wrapper');
 
     // Summary section
     if (feedback.summary) {
       const summarySection = createFeedbackSection('Summary', feedback.summary, 'summary');
-      feedbackCard.appendChild(summarySection);
+      feedbackContentWrapper.appendChild(summarySection);
     }
 
     // Strengths section
     if (feedback.strengths && feedback.strengths.length > 0) {
       const strengthsSection = createFeedbackSection('Strengths', feedback.strengths, 'strengths', true);
-      feedbackCard.appendChild(strengthsSection);
+      feedbackContentWrapper.appendChild(strengthsSection);
     }
 
     // Areas for growth section (previously weaknesses)
     if (feedback.weaknesses && feedback.weaknesses.length > 0) {
       const areasForGrowthSection = createFeedbackSection('Areas for Growth', feedback.weaknesses, 'weaknesses', true);
-      feedbackCard.appendChild(areasForGrowthSection);
+      feedbackContentWrapper.appendChild(areasForGrowthSection);
     }
 
     // Scaffolded suggestions section
     if (feedback.suggestions && feedback.suggestions.length > 0) {
       const suggestionsSection = createFeedbackSection('Scaffolded Suggestions', feedback.suggestions, 'suggestions', true);
-      feedbackCard.appendChild(suggestionsSection);
+      feedbackContentWrapper.appendChild(suggestionsSection);
     }
+
+    // Append wrapper to card (after all sections are added)
+    feedbackCard.appendChild(feedbackContentWrapper);
+
+    // Set up play button to read all feedback content
+    playButton.addEventListener('click', () => {
+      handlePausePlay(playButton, { highlightEl: feedbackContentWrapper, voiceName: 'en-US-Neural2-J' });
+    });
 
     // Add re-check button in bottom right corner
     const recheckButtonContainer = document.createElement('div');
@@ -3766,15 +3861,33 @@ Respond with ONLY the JSON object, no other text.`;
     const feedbackCard = document.createElement('div');
     feedbackCard.classList.add('area-feedback-card');
 
-    // Header with title
+    // Header with title and play button
     const header = document.createElement('div');
     header.classList.add('area-feedback-header');
+    header.style.display = 'flex';
+    header.style.alignItems = 'center';
+    header.style.justifyContent = 'space-between';
 
     const title = document.createElement('h3');
     title.classList.add('area-feedback-title');
     title.textContent = 'General Feedback';
+    title.style.margin = '0';
 
     header.appendChild(title);
+
+    // Create wrapper div for all feedback content (for highlighting)
+    const feedbackContentWrapper = document.createElement('div');
+    feedbackContentWrapper.classList.add('feedback-content-wrapper');
+    
+    // Add play button in header
+    const playButton = createIcon(IMAGES.play, 'Play', 'Play feedback aloud');
+    playButton.dataset.playing = 'false';
+    playButton.style.cursor = 'pointer';
+    playButton.style.width = '24px';
+    playButton.style.height = '24px';
+    playButton.style.marginLeft = 'auto';
+    
+    header.appendChild(playButton);
     feedbackCard.appendChild(header);
 
     if (isStructured) {
@@ -3782,43 +3895,70 @@ Respond with ONLY the JSON object, no other text.`;
       // Summary section
       if (feedback.summary) {
         const summarySection = createFeedbackSection('Summary', feedback.summary, 'summary');
-        feedbackCard.appendChild(summarySection);
+        feedbackContentWrapper.appendChild(summarySection);
       }
 
       // Strengths section
       if (feedback.strengths && feedback.strengths.length > 0) {
         const strengthsSection = createFeedbackSection('Strengths', feedback.strengths, 'strengths', true);
-        feedbackCard.appendChild(strengthsSection);
+        feedbackContentWrapper.appendChild(strengthsSection);
       }
 
       // Areas for growth section
       if (feedback.weaknesses && feedback.weaknesses.length > 0) {
         const areasForGrowthSection = createFeedbackSection('Areas for Growth', feedback.weaknesses, 'weaknesses', true);
-        feedbackCard.appendChild(areasForGrowthSection);
+        feedbackContentWrapper.appendChild(areasForGrowthSection);
       }
 
       // Scaffolded suggestions section
       if (feedback.suggestions && feedback.suggestions.length > 0) {
         const suggestionsSection = createFeedbackSection('Scaffolded Suggestions', feedback.suggestions, 'suggestions', true);
-        feedbackCard.appendChild(suggestionsSection);
+        feedbackContentWrapper.appendChild(suggestionsSection);
       }
+
+      feedbackCard.appendChild(feedbackContentWrapper);
+
+      // Set up play button to read all feedback content
+      playButton.addEventListener('click', () => {
+        handlePausePlay(playButton, { highlightEl: feedbackContentWrapper, voiceName: 'en-US-Neural2-J' });
+      });
     } else {
       // Fallback to old format (plain text) for backwards compatibility
-    const contentSection = document.createElement('div');
-    contentSection.classList.add('feedback-section', 'feedback-section-general');
+      const contentSection = document.createElement('div');
+      contentSection.classList.add('feedback-section', 'feedback-section-general');
 
-    const sectionTitle = document.createElement('h4');
-    sectionTitle.classList.add('feedback-section-title');
-    sectionTitle.textContent = 'Feedback';
-    contentSection.appendChild(sectionTitle);
+      const sectionTitle = document.createElement('h4');
+      sectionTitle.classList.add('feedback-section-title');
+      sectionTitle.textContent = 'Feedback';
+      contentSection.appendChild(sectionTitle);
 
-    const contentDiv = document.createElement('div');
-    contentDiv.classList.add('feedback-section-content', 'general-feedback-content');
-    contentDiv.style.whiteSpace = 'pre-wrap';
-      contentDiv.textContent = typeof feedback === 'string' ? feedback : JSON.stringify(feedback);
-    contentSection.appendChild(contentDiv);
+      const contentDiv = document.createElement('div');
+      contentDiv.classList.add('feedback-section-content', 'general-feedback-content');
+      contentDiv.style.whiteSpace = 'pre-wrap';
+      
+      // Handle feedback object properly
+      if (typeof feedback === 'string') {
+        contentDiv.textContent = feedback;
+      } else if (feedback && typeof feedback === 'object') {
+        // If it's an object but not structured format, try to display it
+        if (feedback.summary || feedback.strengths) {
+          // It's structured format after all
+          contentDiv.textContent = JSON.stringify(feedback);
+        } else {
+          contentDiv.textContent = JSON.stringify(feedback);
+        }
+      } else {
+        contentDiv.textContent = String(feedback || '');
+      }
+      
+      contentSection.appendChild(contentDiv);
+      feedbackContentWrapper.appendChild(contentSection);
+      feedbackCard.appendChild(feedbackContentWrapper);
 
-    feedbackCard.appendChild(contentSection);
+      // Set up play button to read all feedback content
+      playButton.addEventListener('click', () => {
+        handlePausePlay(playButton, { highlightEl: feedbackContentWrapper, voiceName: 'en-US-Neural2-J' });
+      });
     }
 
     // Add re-check button in bottom right corner
@@ -3930,6 +4070,7 @@ Respond with ONLY the JSON object, no other text.`;
     }
 
     section.appendChild(contentDiv);
+
     return section;
   }
 

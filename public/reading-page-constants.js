@@ -8,9 +8,7 @@ export const PERSONALITIES = [
   ' avoiding the questions and redirecting them to something else you want to talk about ',
   ' getting defensive when you have hard questions or questions you do not want to answer ',
   ' giving vague answers that the interviewer cant get much out of ',
-  ' repeating the same points over and over ',
-  ' with controlled messaging - trying to get a certain rehearsed message out -',
-  'with a positive/negative bias towards your subject providing a skewed opinion'
+  ' with controlled messaging - trying to get a certain rehearsed message out -'
 ];
 
 export const IMAGES = {

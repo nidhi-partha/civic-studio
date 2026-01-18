@@ -984,6 +984,42 @@ body {
     transition: background-color 0.1s;
 }
 
+/* Word span for complex HTML structures */
+.word-span {
+    display: inline;
+}
+
+/* Feedback reading active state - subtle visual feedback when reading complex HTML */
+.feedback-reading-active {
+    position: relative;
+}
+
+.feedback-reading-active::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(to right, 
+        rgba(255, 235, 59, 0.1) 0%, 
+        rgba(255, 235, 59, 0.2) 50%, 
+        rgba(255, 235, 59, 0.1) 100%);
+    pointer-events: none;
+    animation: reading-pulse 2s ease-in-out infinite;
+    z-index: 0;
+}
+
+@keyframes reading-pulse {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 0.6; }
+}
+
+.feedback-reading-active > * {
+    position: relative;
+    z-index: 1;
+}
+
 /* Control button styles */
 .control-button-with-margin {
     margin: 5px;
