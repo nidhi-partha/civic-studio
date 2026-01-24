@@ -180,6 +180,9 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
           renderTranscriptBlocks(reflectionSection, state.reflectionTranscript, 'reflection');
         }
         
+        // Render personality technique guidance section
+        renderPersonalityTechniqueGuidance(reflectionSection);
+        
         // Render metacognitive questions section after feedback
         renderMetacognitiveQuestionsSection(reflectionSection);
       }
@@ -525,6 +528,9 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
           renderTranscriptBlocks(reflectionSection, state.reflectionTranscript, 'reflection');
         }
       }
+      
+      // Render personality technique guidance section
+      renderPersonalityTechniqueGuidance(reflectionSection);
       
       // Render metacognitive questions if they exist (after feedback)
       if (Array.isArray(state.metacognitiveQuestions) && state.metacognitiveQuestions.length > 0) {
@@ -1844,39 +1850,212 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
   }
 
   /**
-   * Scores heuristic features of a question (0-1 for each feature)
+   * Gets personality-specific evaluation criteria and weights
+   * Returns an object with technique detection functions and scoring weights
    */
-  function scoreQuestionHeuristics(question, previousAnswer = '') {
+  function getPersonalityScoringCriteria(personalityIndex) {
+    const personalities = [
+      // Index 0: Long-winded, off-topic
+      {
+        techniques: {
+          context_focusing: (q, prevA) => {
+            // Questions that provide context or narrow scope
+            const qLower = q.toLowerCase();
+            return /\b(when you|in your|during|at the time|when|in the context of|specifically|in terms of|regarding|about the)\b/.test(qLower) ? 1.0 : 0.0;
+          },
+          time_anchoring: (q, prevA) => {
+            // Questions that anchor to specific times or events
+            const qLower = q.toLowerCase();
+            return /\b(when|time|date|year|day|moment|during|after|before|then|at that|at the|in|on)\s+(the|this|that|a specific|a particular)\b/.test(qLower) ? 1.0 : 0.5;
+          },
+          redirection_control: (q, prevA) => {
+            // Questions that gently redirect back to topic
+            return /\b(but|however|going back|to focus|specifically about|regarding|on the topic of|about)\b/.test(q.toLowerCase()) ? 1.0 : 0.5;
+          }
+        },
+        weights: {
+          context_focusing: 0.35,
+          time_anchoring: 0.35,
+          redirection_control: 0.20,
+          base_quality: 0.10 // tone_safe, ethics_safe, etc.
+        }
+      },
+      // Index 1: Skeptical, don't let go of info
+      {
+        techniques: {
+          transparency_framing: (q, prevA) => {
+            // Questions that explain why you're asking (transparency)
+            const qLower = q.toLowerCase();
+            return /\b(I'm asking|I want to understand|to clarify|I'm curious|help me understand|I'd like to know|just to understand)\b/.test(qLower) ? 1.0 : 0.0;
+          },
+          low_stakes_entry: (q, prevA) => {
+            // Simple, low-pressure opening questions
+            const qLower = q.toLowerCase();
+            const hasEasyStarters = /\b(can you|could you|tell me|what|how|when|where)\b/.test(qLower);
+            const avoidsPressure = !/\b(why did you|explain|describe in detail|confess|admit)\b/.test(qLower);
+            return (hasEasyStarters && avoidsPressure) ? 1.0 : 0.5;
+          },
+          building_rapport: (q, prevA) => {
+            // Questions that build on previous answers to show listening
+            if (!prevA) return 0.5;
+            const prevWords = prevA.toLowerCase().split(/\s+/).filter(w => w.length >= 3);
+            const qWords = q.toLowerCase().split(/\s+/);
+            const overlap = prevWords.filter(w => qWords.some(qw => qw.includes(w) || w.includes(qw))).length;
+            return Math.min(1.0, overlap / Math.max(1, Math.min(prevWords.length, 5)));
+          }
+        },
+        weights: {
+          transparency_framing: 0.35,
+          low_stakes_entry: 0.30,
+          building_rapport: 0.25,
+          base_quality: 0.10
+        }
+      },
+      // Index 2: Avoiding questions, redirecting
+      {
+        techniques: {
+          question_recognition: (q, prevA) => {
+            // Questions that acknowledge and gently refocus
+            const qLower = q.toLowerCase();
+            return /\b(but|however|going back|to answer|to respond|specifically|about|regarding|on)\b/.test(qLower) ? 1.0 : 0.5;
+          },
+          persistent_followup: (q, prevA) => {
+            // Follow-up questions that reference what was asked before
+            if (!prevA) return 0.5;
+            const prevWords = prevA.toLowerCase().split(/\s+/).filter(w => w.length >= 4);
+            const qWords = q.toLowerCase().split(/\s+/);
+            const overlap = prevWords.filter(w => qWords.some(qw => qw.includes(w) || w.includes(qw))).length;
+            return Math.min(1.0, (overlap + 1) / Math.max(2, Math.min(prevWords.length, 6)));
+          },
+          clear_framing: (q, prevA) => {
+            // Questions that are clearly structured and direct
+            const qLower = q.toLowerCase();
+            const hasQuestionWord = /\b(what|how|why|when|where|who|which)\b/.test(qLower);
+            const isDirect = qLower.length < 80; // Reasonable length
+            return (hasQuestionWord && isDirect) ? 1.0 : 0.5;
+          }
+        },
+        weights: {
+          question_recognition: 0.30,
+          persistent_followup: 0.35,
+          clear_framing: 0.25,
+          base_quality: 0.10
+        }
+      },
+      // Index 3: Getting defensive on hard questions
+      {
+        techniques: {
+          softening_language: (q, prevA) => {
+            // Questions that use soft, non-accusatory language
+            const qLower = q.toLowerCase();
+            const hasSofteners = /\b(can you help me understand|I'm curious|I wonder|if you're comfortable|if possible|would you mind)\b/.test(qLower);
+            const avoidsHard = !/\b(why did you|explain why|justify|defend|prove|accuse)\b/.test(qLower);
+            return (hasSofteners || avoidsHard) ? 1.0 : 0.3;
+          },
+          contextual_framing: (q, prevA) => {
+            // Questions that provide context before asking tough questions
+            const qLower = q.toLowerCase();
+            return /\b(I understand|I know|I realize|recognizing|acknowledging|given that|understanding|aware that)\b/.test(qLower) ? 1.0 : 0.5;
+          },
+          permission_seeking: (q, prevA) => {
+            // Questions that ask permission or check comfort
+            const qLower = q.toLowerCase();
+            return /\b(if you're comfortable|if you don't mind|if it's okay|if possible|would you be willing|can we|is it alright)\b/.test(qLower) ? 1.0 : 0.0;
+          }
+        },
+        weights: {
+          softening_language: 0.40,
+          contextual_framing: 0.30,
+          permission_seeking: 0.20,
+          base_quality: 0.10
+        }
+      },
+      // Index 4: Giving vague answers
+      {
+        techniques: {
+          specificity_prompts: (q, prevA) => {
+            // Questions that ask for specific details, examples, or concrete information
+            const qLower = q.toLowerCase();
+            const hasSpecificPrompts = /\b(specific|exactly|precisely|concrete|for example|give me an example|can you describe|tell me about|what happened|how did)\b/.test(qLower);
+            const asksForDetails = /\b(who|what|when|where|how many|how much|which|name|date|time)\b/.test(qLower);
+            return (hasSpecificPrompts || asksForDetails) ? 1.0 : 0.3;
+          },
+          example_seeking: (q, prevA) => {
+            // Questions that ask for examples or concrete instances
+            const qLower = q.toLowerCase();
+            return /\b(for example|can you give an example|instance|specific case|like when|such as|describe|tell me about a time)\b/.test(qLower) ? 1.0 : 0.0;
+          },
+          probing_for_details: (q, prevA) => {
+            // Follow-up questions that dig deeper into vague answers
+            if (!prevA) return 0.5;
+            const qLower = q.toLowerCase();
+            const isProbing = /\b(can you|tell me more|what do you mean|how so|in what way|specifically|elaborate|expand|go deeper)\b/.test(qLower);
+            return isProbing ? 1.0 : 0.5;
+          }
+        },
+        weights: {
+          specificity_prompts: 0.40,
+          example_seeking: 0.30,
+          probing_for_details: 0.20,
+          base_quality: 0.10
+        }
+      },
+      // Index 5: Controlled messaging, rehearsed
+      {
+        techniques: {
+          breaking_patterns: (q, prevA) => {
+            // Questions that don't follow expected patterns or scripted responses
+            const qLower = q.toLowerCase();
+            const isUnexpected = /\b(actually|but|however|what about|what if|but what about|on the other hand|but then)\b/.test(qLower);
+            const asksNewAngle = /\b(from another angle|different perspective|another way|if we look at|considering|thinking about)\b/.test(qLower);
+            return (isUnexpected || asksNewAngle) ? 1.0 : 0.3;
+          },
+          process_questions: (q, prevA) => {
+            // Questions about process, decision-making, or internal states rather than outcomes
+            const qLower = q.toLowerCase();
+            return /\b(how did you decide|what was your process|how did you feel|what went through your mind|what were you thinking|decision-making|thought process)\b/.test(qLower) ? 1.0 : 0.0;
+          },
+          behind_the_scenes: (q, prevA) => {
+            // Questions that go beyond the public message
+            const qLower = q.toLowerCase();
+            return /\b(behind|behind the scenes|what people don't know|what's not often discussed|what's really|the reality|the truth|beyond|outside of)\b/.test(qLower) ? 1.0 : 0.0;
+          }
+        },
+        weights: {
+          breaking_patterns: 0.35,
+          process_questions: 0.35,
+          behind_the_scenes: 0.20,
+          base_quality: 0.10
+        }
+      }
+    ];
+    
+    return personalities[personalityIndex] || personalities[2]; // Default to index 2 if invalid
+  }
+
+  /**
+   * Scores heuristic features of a question (0-1 for each feature)
+   * Now includes personality-specific technique detection
+   */
+  function scoreQuestionHeuristics(question, previousAnswer = '', personalityIndex = 2) {
     const q = question.toLowerCase().trim();
-    const prevA = previousAnswer.toLowerCase();
+    const prevA = (previousAnswer || '').toLowerCase();
     
-    // is_open_ended: starts with how/why/what/tell me about
-    const is_open_ended = (
-      q.match(/^(how|why|what|tell me about|can you tell me|tell me more)/) !== null
-    ) ? 1.0 : 0.0;
+    // Get personality-specific criteria
+    const criteria = getPersonalityScoringCriteria(personalityIndex);
     
-    // is_specific: contains concrete nouns/time/places, not vague like "so... thoughts?"
-    const hasConcreteNouns = /\b(when|where|who|which|time|day|year|place|name|person|event)\b/.test(q);
-    const hasVaguePhrases = /\b(so|thoughts|opinion|think about|feel about)\s*\?/.test(q);
-    const is_specific = hasConcreteNouns && !hasVaguePhrases ? 1.0 : (hasVaguePhrases ? 0.0 : 0.5);
-    
-    // is_followup: references interviewee's last answer via keyword overlap
-    let is_followup = 0.0;
-    if (previousAnswer) {
-      // Extract key words from previous answer (2+ chars, not common words)
-      const commonWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'i', 'you', 'he', 'she', 'it', 'they', 'this', 'that', 'to', 'of', 'in', 'on', 'at', 'for', 'with']);
-      const prevWords = prevA.split(/\s+/).filter(w => w.length >= 3 && !commonWords.has(w.toLowerCase()));
-      const qWords = q.split(/\s+/);
-      const overlap = prevWords.filter(w => qWords.some(qw => qw.includes(w) || w.includes(qw))).length;
-      is_followup = Math.min(1.0, overlap / Math.max(1, Math.min(prevWords.length, 5))); // Normalize to 0-1
+    // Score personality-specific techniques
+    const techniqueScores = {};
+    for (const [techniqueName, techniqueFunc] of Object.entries(criteria.techniques)) {
+      techniqueScores[techniqueName] = techniqueFunc(q, prevA);
     }
     
+    // Base quality features (used by all personalities)
     // is_double_barreled: contains two questions (has multiple "?" or "and" + question pattern)
     const questionMarks = (q.match(/\?/g) || []).length;
     const hasAndQuestion = /\b(and|also|additionally|plus)\s+[^?.]*\?/.test(q);
     const is_double_barreled = (questionMarks > 1 || hasAndQuestion) ? 0.0 : 1.0;
     
-    // Heuristic scores for LLM-checked features (computed first, may be refined by LLM)
     // is_leading: check for common leading phrases
     const is_leading = (
       /\b(don't you think|isn't it true|so you admit|wouldn't you agree|you must|you have to|obviously|clearly)\b/.test(q)
@@ -1887,14 +2066,16 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
       /\b(stupid|idiot|dumb|ridiculous|absurd|terrible|awful|hate|disgusting)\b/.test(q)
     ) ? 0.0 : 1.0;
     
-    // ethics_safe: check for obvious privacy violations (harder to detect with heuristics, default to safe)
+    // ethics_safe: check for obvious privacy violations
     const hasPrivateProbing = /\b(ssn|social security|credit card|bank account|password|address|phone number)\b/.test(q);
     const ethics_safe = hasPrivateProbing ? 0.0 : 1.0;
     
+    // Base quality score (average of fundamental qualities)
+    const baseQuality = (is_double_barreled + is_leading + tone_safe + ethics_safe) / 4;
+    
     return {
-      is_open_ended,
-      is_specific,
-      is_followup,
+      ...techniqueScores,
+      base_quality: baseQuality,
       is_double_barreled,
       is_leading,
       tone_safe,
@@ -2040,16 +2221,20 @@ Respond with ONLY the JSON object, no other text.`;
 
   /**
    * Scores a single question turn (0-1) based on interaction quality
-   * Uses heuristics first, then LLM only for features that scored poorly
+   * Uses personality-specific evaluation criteria and weights
+   * Uses heuristics first, then LLM only for base features that scored poorly
    */
-  async function scoreQuestionTurn(question, previousAnswer = '') {
-    // Get heuristic scores (including LLM-checked features)
-    const heuristics = scoreQuestionHeuristics(question, previousAnswer);
+  async function scoreQuestionTurn(question, previousAnswer = '', personalityIndex = 2) {
+    // Get personality-specific criteria and weights
+    const criteria = getPersonalityScoringCriteria(personalityIndex);
+    
+    // Get heuristic scores (including personality-specific techniques)
+    const heuristics = scoreQuestionHeuristics(question, previousAnswer, personalityIndex);
     
     // Threshold for re-checking with LLM (if heuristic score is below this, verify with LLM)
     const LLM_THRESHOLD = 0.8;
     
-    // Determine which features need LLM verification
+    // Determine which base features need LLM verification
     const featuresToCheck = [];
     if (heuristics.is_leading < LLM_THRESHOLD) {
       featuresToCheck.push('is_leading');
@@ -2061,32 +2246,32 @@ Respond with ONLY the JSON object, no other text.`;
       featuresToCheck.push('ethics_safe');
     }
     
-    // Get LLM scores only for features that need verification
+    // Get LLM scores only for base features that need verification
     let llmScores = {};
     if (featuresToCheck.length > 0) {
       llmScores = await scoreQuestionWithLLM(question, previousAnswer, featuresToCheck);
     }
     
-    // Use LLM scores if available, otherwise use heuristic scores
+    // Use LLM scores if available, otherwise use heuristic scores for base features
     const is_leading = llmScores.hasOwnProperty('is_leading') ? llmScores.is_leading : heuristics.is_leading;
     const tone_safe = llmScores.hasOwnProperty('tone_safe') ? llmScores.tone_safe : heuristics.tone_safe;
     const ethics_safe = llmScores.hasOwnProperty('ethics_safe') ? llmScores.ethics_safe : heuristics.ethics_safe;
     
+    // Update base_quality with refined base feature scores
+    const refinedBaseQuality = (heuristics.is_double_barreled + is_leading + tone_safe + ethics_safe) / 4;
+    
     // Check for repair moves
     const hasRepair = detectRepairMove(question);
     
-    // Combine scores (weighted average)
-    // Open-ended: 0.15, Specific: 0.15, Follow-up: 0.20, Not double-barreled: 0.10
-    // Not leading: 0.15, Tone safe: 0.15, Ethics safe: 0.10
-    const score = (
-      heuristics.is_open_ended * 0.15 +
-      heuristics.is_specific * 0.15 +
-      heuristics.is_followup * 0.20 +
-      heuristics.is_double_barreled * 0.10 +
-      is_leading * 0.15 +
-      tone_safe * 0.15 +
-      ethics_safe * 0.10
-    );
+    // Combine scores using personality-specific weights
+    let score = refinedBaseQuality * (criteria.weights.base_quality || 0.1);
+    
+    // Add personality-specific technique scores with their weights
+    for (const [techniqueName, weight] of Object.entries(criteria.weights)) {
+      if (techniqueName !== 'base_quality' && heuristics.hasOwnProperty(techniqueName)) {
+        score += heuristics[techniqueName] * weight;
+      }
+    }
     
     // Add repair boost (0.1 bonus, capped at 1.0)
     const finalScore = Math.min(1.0, score + (hasRepair ? 0.1 : 0));
@@ -2097,6 +2282,7 @@ Respond with ONLY the JSON object, no other text.`;
   /**
    * Calculates trust level using hybrid scoring + exponential moving average
    * Returns a value between 0.1 (low trust) and 0.9 (high trust)
+   * Now uses personality-specific evaluation criteria
    */
   async function calculateTrustLevel(transcript, currentQuestion = '') {
     // Initialize trust history if not exists
@@ -2109,6 +2295,9 @@ Respond with ONLY the JSON object, no other text.`;
       return 0.1;
     }
     
+    // Get current personality index (default to 2 if not set)
+    const personalityIndex = state.personalityIndex !== undefined ? state.personalityIndex : 2;
+    
     // If we have a current question, score it and update trust
     if (currentQuestion) {
       // Get previous answer if available
@@ -2116,8 +2305,8 @@ Respond with ONLY the JSON object, no other text.`;
         ? String(transcript[transcript.length - 1] || '').replace(/^A:\s*/i, '')
         : '';
       
-      // Score the current question
-      const currentScore = await scoreQuestionTurn(currentQuestion, prevAnswer);
+      // Score the current question using personality-specific criteria
+      const currentScore = await scoreQuestionTurn(currentQuestion, prevAnswer, personalityIndex);
       
       // Update trust using exponential moving average (alpha = 0.75)
       // trust_t = alpha * trust_{t-1} + (1 - alpha) * score_t
@@ -2962,6 +3151,11 @@ Respond with ONLY the JSON object, no other text.`;
       // Render reflection transcript blocks first (which now includes the general feedback)
       if (reflectionSection && Array.isArray(state.reflectionTranscript) && state.reflectionTranscript.length > 0) {
         renderTranscriptBlocks(reflectionSection, state.reflectionTranscript, 'reflection');
+      }
+      
+      // Render personality technique guidance section
+      if (reflectionSection) {
+        renderPersonalityTechniqueGuidance(reflectionSection);
       }
       
       // Render metacognitive questions section after feedback
@@ -3924,17 +4118,17 @@ Respond with ONLY the JSON object, no other text.`;
       });
     } else {
       // Fallback to old format (plain text) for backwards compatibility
-      const contentSection = document.createElement('div');
-      contentSection.classList.add('feedback-section', 'feedback-section-general');
+    const contentSection = document.createElement('div');
+    contentSection.classList.add('feedback-section', 'feedback-section-general');
 
-      const sectionTitle = document.createElement('h4');
-      sectionTitle.classList.add('feedback-section-title');
-      sectionTitle.textContent = 'Feedback';
-      contentSection.appendChild(sectionTitle);
+    const sectionTitle = document.createElement('h4');
+    sectionTitle.classList.add('feedback-section-title');
+    sectionTitle.textContent = 'Feedback';
+    contentSection.appendChild(sectionTitle);
 
-      const contentDiv = document.createElement('div');
-      contentDiv.classList.add('feedback-section-content', 'general-feedback-content');
-      contentDiv.style.whiteSpace = 'pre-wrap';
+    const contentDiv = document.createElement('div');
+    contentDiv.classList.add('feedback-section-content', 'general-feedback-content');
+    contentDiv.style.whiteSpace = 'pre-wrap';
       
       // Handle feedback object properly
       if (typeof feedback === 'string') {
@@ -4353,6 +4547,379 @@ Generate exactly 2-3 questions as a JSON array of strings, like: ["Question 1", 
     }
     
     return questions;
+  }
+
+  /**
+   * Generates personality-specific technique guidance using Claude API
+   */
+  async function generatePersonalityTechniqueGuidance(transcript, personalityIndex) {
+    if (!Array.isArray(transcript) || transcript.length === 0) {
+      return null;
+    }
+    
+    const personalityName = PERSONALITIES[personalityIndex]?.trim() || 'this interviewee';
+    
+    // Get technique descriptions for context
+    const criteria = getPersonalityScoringCriteria(personalityIndex);
+    const techniqueNames = Object.keys(criteria.techniques);
+    const techniqueDescriptions = techniqueNames.map(name => {
+      // Convert snake_case to readable names
+      const readableName = name.split('_').map(word => 
+        word.charAt(0).toUpperCase() + word.slice(1)
+      ).join(' ');
+      return readableName;
+    }).join(', ');
+    
+    // Format transcript for prompt
+    const transcriptText = transcript
+      .map(item => String(item))
+      .join('\n');
+    
+    const prompt = `You are an experienced journalism coach helping a student improve their interviewing skills.
+
+The student has been interviewing an interviewee with this personality trait: "${personalityName}"
+
+Here is the interview transcript:
+${transcriptText}
+
+The student should be using these techniques to handle this personality effectively:
+${techniqueNames.map((name, idx) => {
+  const readableName = name.split('_').map(word => 
+    word.charAt(0).toUpperCase() + word.slice(1)
+  ).join(' ');
+  return `${idx + 1}. ${readableName}`;
+}).join('\n')}
+
+Analyze the transcript and identify:
+1. Which techniques the student is using well (if any)
+2. Which techniques the student could use better or more frequently
+3. Specific examples from the transcript where better technique use would have helped
+4. Concrete example questions the student could ask to better use these techniques
+
+Respond with a JSON object in this format:
+{
+  "summary": "A brief 1-2 sentence summary of how well the student is handling this personality",
+  "techniques_used_well": [
+    {
+      "technique": "Name of the technique (e.g., 'Context Focusing')",
+      "example": "A specific question from the transcript that demonstrates good use"
+    }
+  ],
+  "techniques_to_improve": [
+    {
+      "technique": "Name of the technique (e.g., 'Time Anchoring')",
+      "description": "Why this technique would help with this personality",
+      "current_usage": "How the student is currently using it (or not using it)",
+      "example_questions": [
+        "Example question 1 the student could ask",
+        "Example question 2 the student could ask"
+      ]
+    }
+  ]
+}
+
+Focus on techniques that are most important for handling "${personalityName}". If the student is already using techniques well, acknowledge that. If they need improvement, be specific and constructive.
+
+Return ONLY valid JSON, no other text.`;
+
+    try {
+      const response = await callClaude(prompt);
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const guidance = JSON.parse(jsonMatch[0]);
+        return {
+          ...guidance,
+          personalityIndex,
+          personalityName
+        };
+      }
+    } catch (error) {
+      console.error('Error generating personality technique guidance:', error);
+    }
+    
+    return null;
+  }
+
+  /**
+   * Renders personality-specific technique guidance section
+   */
+  async function renderPersonalityTechniqueGuidance(container) {
+    if (!container) return;
+    
+    // Remove existing guidance section if it exists
+    const existingSection = container.querySelector('.reflection-block[data-type="personality-guidance"]');
+    if (existingSection) {
+      existingSection.remove();
+    }
+    
+    // Only show if we have a transcript and personality index
+    if (!Array.isArray(state.fullTranscript) || state.fullTranscript.length === 0) {
+      return;
+    }
+    
+    const personalityIndex = state.personalityIndex !== undefined ? state.personalityIndex : 2;
+    const personalityName = PERSONALITIES[personalityIndex]?.trim() || 'this interviewee';
+    
+    // Create loading placeholder
+    const sectionDiv = document.createElement('div');
+    sectionDiv.classList.add('reflection-block');
+    sectionDiv.setAttribute('data-type', 'personality-guidance');
+    
+    const headerDiv = document.createElement('div');
+    headerDiv.classList.add('reflection-block-header');
+    
+    const collapseIcon = document.createElement('span');
+    collapseIcon.innerText = '▼';
+    collapseIcon.classList.add('collapse-icon');
+    
+    const headerTitle = document.createElement('h4');
+    headerTitle.innerText = `Techniques for Handling ${personalityName}`;
+    
+    headerDiv.appendChild(collapseIcon);
+    headerDiv.appendChild(headerTitle);
+    sectionDiv.appendChild(headerDiv);
+    
+    const contentDiv = document.createElement('div');
+    contentDiv.classList.add('reflection-block-content');
+    contentDiv.style.display = 'block';
+    
+    const loadingP = document.createElement('p');
+    loadingP.style.color = '#666';
+    loadingP.style.fontStyle = 'italic';
+    loadingP.textContent = 'Analyzing your interview techniques...';
+    contentDiv.appendChild(loadingP);
+    
+    sectionDiv.appendChild(contentDiv);
+    
+    // Insert before metacognitive questions section if it exists, otherwise append
+    const metacognitiveSection = container.querySelector('.reflection-block[data-type="metacognitive"]');
+    if (metacognitiveSection) {
+      container.insertBefore(sectionDiv, metacognitiveSection);
+    } else {
+      container.appendChild(sectionDiv);
+    }
+    
+    // Make header collapsible
+    headerDiv.addEventListener('click', () => {
+      if (contentDiv.style.display === 'none') {
+        expandReflectionBlock(sectionDiv);
+      } else {
+        collapseReflectionBlock(sectionDiv);
+      }
+    });
+    
+    // Generate guidance
+    try {
+      const guidance = await generatePersonalityTechniqueGuidance(state.fullTranscript, personalityIndex);
+      
+      // Remove loading text
+      contentDiv.innerHTML = '';
+      
+      if (!guidance || (!guidance.techniques_used_well?.length && !guidance.techniques_to_improve?.length)) {
+        const noGuidanceP = document.createElement('p');
+        noGuidanceP.style.color = '#666';
+        noGuidanceP.textContent = 'Continue practicing to receive technique guidance.';
+        contentDiv.appendChild(noGuidanceP);
+        return;
+      }
+      
+      // Add summary if available
+      if (guidance.summary) {
+        const summaryP = document.createElement('p');
+        summaryP.style.marginBottom = '20px';
+        summaryP.style.color = '#555';
+        summaryP.style.lineHeight = '1.6';
+        summaryP.textContent = guidance.summary;
+        contentDiv.appendChild(summaryP);
+      }
+      
+      // Add techniques used well
+      if (guidance.techniques_used_well && guidance.techniques_used_well.length > 0) {
+        const wellSection = document.createElement('div');
+        wellSection.style.marginBottom = '24px';
+        
+        const wellTitle = document.createElement('h5');
+        wellTitle.style.margin = '0 0 12px 0';
+        wellTitle.style.fontSize = '18px';
+        wellTitle.style.fontWeight = '600';
+        wellTitle.style.color = '#4caf50';
+        wellTitle.textContent = 'Techniques You\'re Using Well';
+        wellSection.appendChild(wellTitle);
+        
+        guidance.techniques_used_well.forEach(technique => {
+          const techniqueDiv = document.createElement('div');
+          techniqueDiv.style.marginBottom = '16px';
+          techniqueDiv.style.padding = '12px';
+          techniqueDiv.style.backgroundColor = '#f0f9f0';
+          techniqueDiv.style.borderRadius = '8px';
+          techniqueDiv.style.borderLeft = '4px solid #4caf50';
+          
+          const nameP = document.createElement('p');
+          nameP.style.margin = '0 0 8px 0';
+          nameP.style.fontWeight = '600';
+          nameP.style.color = '#333';
+          nameP.textContent = technique.technique;
+          techniqueDiv.appendChild(nameP);
+          
+          if (technique.example) {
+            const exampleP = document.createElement('p');
+            exampleP.style.margin = '0';
+            exampleP.style.fontStyle = 'italic';
+            exampleP.style.color = '#555';
+            exampleP.textContent = `Example: "${technique.example}"`;
+            techniqueDiv.appendChild(exampleP);
+          }
+          
+          wellSection.appendChild(techniqueDiv);
+        });
+        
+        contentDiv.appendChild(wellSection);
+      }
+      
+      // Add techniques to improve
+      if (guidance.techniques_to_improve && guidance.techniques_to_improve.length > 0) {
+        const improveSection = document.createElement('div');
+        improveSection.style.marginBottom = '24px';
+        
+        const improveTitle = document.createElement('h5');
+        improveTitle.style.margin = '0 0 12px 0';
+        improveTitle.style.fontSize = '18px';
+        improveTitle.style.fontWeight = '600';
+        improveTitle.style.color = '#ff9800';
+        improveTitle.textContent = 'Techniques to Improve (Click on each block for more info!)';
+        improveSection.appendChild(improveTitle);
+        
+        guidance.techniques_to_improve.forEach(technique => {
+          const techniqueDiv = document.createElement('div');
+          techniqueDiv.style.marginBottom = '12px';
+          techniqueDiv.style.backgroundColor = '#fff8f0';
+          techniqueDiv.style.borderRadius = '8px';
+          techniqueDiv.style.borderLeft = '4px solid #ff9800';
+          techniqueDiv.style.overflow = 'hidden';
+          
+          // Create collapsible header
+          const techniqueHeader = document.createElement('div');
+          techniqueHeader.style.display = 'flex';
+          techniqueHeader.style.alignItems = 'center';
+          techniqueHeader.style.padding = '12px 16px';
+          techniqueHeader.style.cursor = 'pointer';
+          techniqueHeader.style.userSelect = 'none';
+          techniqueHeader.style.transition = 'background-color 0.2s';
+          
+          // Add hover effect
+          techniqueHeader.addEventListener('mouseenter', () => {
+            techniqueHeader.style.backgroundColor = '#fff0e0';
+          });
+          techniqueHeader.addEventListener('mouseleave', () => {
+            techniqueHeader.style.backgroundColor = 'transparent';
+          });
+          
+          // Collapse/expand icon
+          const collapseIcon = document.createElement('span');
+          collapseIcon.style.marginRight = '12px';
+          collapseIcon.style.fontSize = '12px';
+          collapseIcon.style.color = '#666';
+          collapseIcon.style.transition = 'transform 0.2s';
+          collapseIcon.textContent = '▶';
+          collapseIcon.classList.add('technique-collapse-icon');
+          
+          // Technique name
+          const nameP = document.createElement('p');
+          nameP.style.margin = '0';
+          nameP.style.fontSize = '16px';
+          nameP.style.fontWeight = '600';
+          nameP.style.color = '#333';
+          nameP.style.flex = '1';
+          nameP.textContent = technique.technique;
+          
+          techniqueHeader.appendChild(collapseIcon);
+          techniqueHeader.appendChild(nameP);
+          techniqueDiv.appendChild(techniqueHeader);
+          
+          // Collapsible content area
+          const techniqueContent = document.createElement('div');
+          techniqueContent.style.display = 'none';
+          techniqueContent.style.padding = '0 16px 16px 16px';
+          techniqueContent.classList.add('technique-content');
+          
+          // Add description
+          if (technique.description) {
+            const descP = document.createElement('p');
+            descP.style.margin = '12px 0 8px 0';
+            descP.style.color = '#555';
+            descP.style.lineHeight = '1.6';
+            descP.textContent = technique.description;
+            techniqueContent.appendChild(descP);
+          }
+          
+          // Add current usage
+          if (technique.current_usage) {
+            const currentP = document.createElement('p');
+            currentP.style.margin = '0 0 12px 0';
+            currentP.style.fontSize = '14px';
+            currentP.style.color = '#666';
+            currentP.style.fontStyle = 'italic';
+            currentP.textContent = `Current usage: ${technique.current_usage}`;
+            techniqueContent.appendChild(currentP);
+          }
+          
+          // Add example questions
+          if (technique.example_questions && technique.example_questions.length > 0) {
+            const examplesTitle = document.createElement('p');
+            examplesTitle.style.margin = '12px 0 8px 0';
+            examplesTitle.style.fontWeight = '600';
+            examplesTitle.style.color = '#333';
+            examplesTitle.textContent = 'Example questions you could ask:';
+            techniqueContent.appendChild(examplesTitle);
+            
+            const examplesList = document.createElement('ul');
+            examplesList.style.margin = '0 0 0 0';
+            examplesList.style.paddingLeft = '24px';
+            examplesList.style.color = '#555';
+            
+            technique.example_questions.forEach(example => {
+              const li = document.createElement('li');
+              li.style.marginBottom = '8px';
+              li.style.lineHeight = '1.5';
+              li.textContent = `"${example}"`;
+              examplesList.appendChild(li);
+            });
+            
+            techniqueContent.appendChild(examplesList);
+          }
+          
+          techniqueDiv.appendChild(techniqueContent);
+          
+          // Toggle expand/collapse on header click
+          techniqueHeader.addEventListener('click', () => {
+            const isExpanded = techniqueContent.style.display !== 'none';
+            if (isExpanded) {
+              // Collapse
+              techniqueContent.style.display = 'none';
+              collapseIcon.textContent = '▶';
+              collapseIcon.style.transform = 'rotate(0deg)';
+            } else {
+              // Expand
+              techniqueContent.style.display = 'block';
+              collapseIcon.textContent = '▼';
+              collapseIcon.style.transform = 'rotate(0deg)';
+            }
+          });
+          
+          improveSection.appendChild(techniqueDiv);
+        });
+        
+        contentDiv.appendChild(improveSection);
+      }
+      
+    } catch (error) {
+      console.error('Error rendering personality technique guidance:', error);
+      contentDiv.innerHTML = '';
+      const errorP = document.createElement('p');
+      errorP.style.color = '#d32f2f';
+      errorP.textContent = 'Error generating technique guidance. Please try again.';
+      contentDiv.appendChild(errorP);
+    }
   }
 
   /**
