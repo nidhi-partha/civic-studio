@@ -26,6 +26,15 @@ import {
   orderBy
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
+import {
+  getStorage,
+  ref,
+  uploadBytes,
+  getDownloadURL,
+  getBytes,
+  deleteObject
+} from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js';
+
 // (Optional) analytics – only if you care about it
 // import { getAnalytics } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-analytics.js';
 
@@ -34,6 +43,7 @@ const app = initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+export const storage = getStorage(app);
 
 export {
   onAuthStateChanged,
@@ -48,5 +58,10 @@ export {
   collection,
   getDocs,
   query,
-  orderBy
+  orderBy,
+  ref,
+  uploadBytes,
+  getDownloadURL,
+  getBytes,
+  deleteObject
 };

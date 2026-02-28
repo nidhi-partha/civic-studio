@@ -1,0 +1,15 @@
+[
+  {
+    "origin": [
+      "http://localhost:5001",
+      "http://localhost:*",
+      "http://127.0.0.1:5001",
+      "http://127.0.0.1:*",
+      "https://gse-aixdesign-lab.firebaseapp.com",
+      "https://*.firebaseapp.com"
+    ],
+    "method": ["GET", "HEAD", "OPTIONS"],
+    "responseHeader": ["Content-Type", "Content-Length", "Access-Control-Allow-Origin"],
+    "maxAgeSeconds": 3600
+  }
+]

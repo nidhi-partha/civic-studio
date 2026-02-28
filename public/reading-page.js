@@ -5,9 +5,10 @@
 import { callClaude } from './claude-api.js';
 import { callGemini } from './gemini-api.js';
 import {
-  auth, signOut, db,
+  auth, signOut, db, storage,
   onAuthStateChanged,
-  doc, getDoc, setDoc, updateDoc, serverTimestamp
+  doc, getDoc, setDoc, updateDoc, serverTimestamp,
+  ref, uploadBytes, getDownloadURL, getBytes, deleteObject
 } from './firebase-init.js';
 import { callOpenAI } from './openai-api.js';
 import { PERSONALITIES, IMAGES, MODULES } from './reading-page-constants.js';
@@ -49,7 +50,8 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
     areaFeedbackCache: {}, // Cache for area-specific feedback (keyed by module name)
     selectedArea: null, // Currently selected area for detailed feedback display
     metacognitiveQuestions: [], // Array of metacognitive reflection questions
-    metacognitiveAnswers: {} // Object mapping question index to answer text
+    metacognitiveAnswers: {}, // Object mapping question index to answer text
+    audioSegments: [] // Array of { segmentIndex, questionText, answerText, questionAudioUrl, answerAudioUrl, questionAudioPath, answerAudioPath, startTime, endTime, feedback, metacognitiveAnswer }
   };
 
   // --- DOM Elements Cache ---
@@ -183,8 +185,8 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
         // Render personality technique guidance section
         renderPersonalityTechniqueGuidance(reflectionSection);
         
-        // Render metacognitive questions section after feedback
-        renderMetacognitiveQuestionsSection(reflectionSection);
+        // [COMMENTED OUT] Render metacognitive questions section after feedback
+        // renderMetacognitiveQuestionsSection(reflectionSection);
       }
     });
   }
@@ -295,6 +297,7 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
       state.unansweredQuestions = Array.isArray(s.unansweredQuestions) ? s.unansweredQuestions : [];
       state.metacognitiveQuestions = Array.isArray(s.metacognitiveQuestions) ? s.metacognitiveQuestions : [];
       state.metacognitiveAnswers = s.metacognitiveAnswers && typeof s.metacognitiveAnswers === 'object' ? s.metacognitiveAnswers : {};
+      state.audioSegments = Array.isArray(s.audioSegments) ? s.audioSegments : [];
       
       // Migrate old notes format (notes saved as *interviewer note*: in transcript) to new format
       if (state.notes.length === 0) {
@@ -423,6 +426,7 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
         unansweredQuestions: state.unansweredQuestions || [],
         metacognitiveQuestions: state.metacognitiveQuestions || [],
         metacognitiveAnswers: state.metacognitiveAnswers || {},
+        audioSegments: state.audioSegments || [],
         currentTab: (id('reflectionContainer') && id('reflectionContainer').style.display !== 'none')
           ? 'reflection'
           : 'interview'
@@ -500,7 +504,7 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
     if (refTab) { refTab.classList.remove('active'); refTab.style.opacity = '1'; }
   }
 
-  function switchToReflectionTab() {
+  async function switchToReflectionTab() {
     const brainstormTab = id('tab-brainstorm');
     const intTab = id('tab-interview');
     const refTab = id('tab-reflection');
@@ -519,7 +523,17 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
     // Ensure reflection transcript blocks are rendered when switching to reflection tab
     const reflectionSection = id('reflectionBlockSection');
     if (reflectionSection) {
-      // Render reflection transcript blocks first (feedback)
+      // Display audio player FIRST if audio segments exist (don't regenerate, just display existing)
+      // This must be done before renderTranscriptBlocks to ensure it's preserved
+      if (Array.isArray(state.audioSegments) && state.audioSegments.length > 0) {
+        // Check if audio player already exists
+        const existingPlayer = reflectionSection.querySelector('.audio-player-container');
+        if (!existingPlayer) {
+          await displayAudioPlayer(reflectionSection);
+        }
+      }
+      
+      // Render reflection transcript blocks AFTER audio player (preserves audio player)
       if (Array.isArray(state.reflectionTranscript) && state.reflectionTranscript.length > 0) {
         // Only render if not already rendered (check if section has children that aren't loading placeholders)
         const hasContent = reflectionSection.children.length > 0 && 
@@ -532,14 +546,14 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
       // Render personality technique guidance section
       renderPersonalityTechniqueGuidance(reflectionSection);
       
-      // Render metacognitive questions if they exist (after feedback)
-      if (Array.isArray(state.metacognitiveQuestions) && state.metacognitiveQuestions.length > 0) {
-        const existingMetacognitive = reflectionSection.querySelector('.reflection-block[data-type="metacognitive"]') ||
-                                      reflectionSection.querySelector('.metacognitive-questions-section');
-        if (!existingMetacognitive) {
-          renderMetacognitiveQuestionsSection(reflectionSection);
-        }
-      }
+      // [COMMENTED OUT] Render metacognitive questions if they exist (after feedback)
+      // if (Array.isArray(state.metacognitiveQuestions) && state.metacognitiveQuestions.length > 0) {
+      //   const existingMetacognitive = reflectionSection.querySelector('.reflection-block[data-type="metacognitive"]') ||
+      //                                 reflectionSection.querySelector('.metacognitive-questions-section');
+      //   if (!existingMetacognitive) {
+      //     renderMetacognitiveQuestionsSection(reflectionSection);
+      //   }
+      // }
     }
   }
 
@@ -966,7 +980,16 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
     let selectedAreaName = state.selectedArea;
     let cachedFeedback = selectedAreaName ? state.areaFeedbackCache[selectedAreaName] : null;
   
+    // Preserve audio player if it exists (for reflection mode)
+    const audioPlayer = container.querySelector('.audio-player-container');
+    
     container.innerHTML = ''; // clear old DOM
+    
+    // Restore audio player at the beginning if it existed
+    if (audioPlayer) {
+      container.appendChild(audioPlayer);
+    }
+    
     const pairs = transcriptToPairs(transcriptArray);
   
       if (mode === 'reflection') {
@@ -982,13 +1005,12 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
         }
       });
       
-      // Add areas section at the top (if general feedback exists)
-      if (generalFeedbackPairs.length > 0) {
-        const areasSection = createAreasSection();
-        container.appendChild(areasSection);
-        
+      // [COMMENTED OUT] Add areas section at the top (general feedback and area buttons hidden)
+      if (false && generalFeedbackPairs.length > 0) {
+        // const areasSection = createAreasSection();
+        // container.appendChild(areasSection);
+        //
         // Restore selected area if it was previously selected and has cached feedback
-        // Check if it's General Feedback first
         if (selectedAreaName === 'General Feedback') {
           // Try to get from cache, or extract from transcript
           let generalFeedbackText = state.areaFeedbackCache['General Feedback'];
@@ -1192,9 +1214,16 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
       try {
         qaBlock.style.backgroundColor = '#edf2f7';
         answerElement.innerText = "thinking...";
-        const userQuery = await captureSpeech();
-        if (userQuery) {
-          await processResponse(userQuery, answerElement, questionElement, qaBlock);
+        const speechResult = await captureSpeech();
+        if (speechResult && speechResult.transcript) {
+          await processResponse(
+            speechResult.transcript, 
+            answerElement, 
+            questionElement, 
+            qaBlock,
+            speechResult.audioBlob || null,
+            speechResult.duration || 0
+          );
         }
       } catch (error) {
         console.error('Error during QA block click:', error);
@@ -1464,8 +1493,12 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
     try {
       qaBlock.style.backgroundColor = '#edf2f7';
       answerElement.innerText = "thinking...";
-      const userQuery = await captureSpeech();
-      if (userQuery) {
+      const speechResult = await captureSpeech();
+      if (speechResult && speechResult.transcript) {
+        const userQuery = speechResult.transcript;
+        const questionAudioBlob = speechResult.audioBlob || null;
+        const questionDuration = speechResult.duration || 0;
+        
         // Update the question element immediately so user can see the new question
         questionElement.innerText = `Q: ${userQuery}`;
         // Only update originalQuestion for non-interview modes
@@ -1478,7 +1511,7 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
           // For interview mode, originalQuestion should already be set from when the block was created
           // and we want to preserve it so we can remove it from unansweredQuestions
         }
-        await processResponse(userQuery, answerElement, questionElement, qaBlock);
+        await processResponse(userQuery, answerElement, questionElement, qaBlock, questionAudioBlob, questionDuration);
       }
     } catch (error) {
       console.error('Error during QA block click:', error);
@@ -1567,8 +1600,14 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
 
   /**
    * Processes user response and generates AI response
+   * @param {string} userQuery - The user's question text
+   * @param {HTMLElement} answerElement - DOM element to display answer
+   * @param {HTMLElement} questionElement - DOM element to display question
+   * @param {HTMLElement} qaBlock - The Q/A block container
+   * @param {Blob} questionAudioBlob - Optional audio blob of user's question
+   * @param {number} questionDuration - Duration of question audio in seconds
    */
-  async function processResponse(userQuery, answerElement, questionElement, qaBlock = null) {
+  async function processResponse(userQuery, answerElement, questionElement, qaBlock = null, questionAudioBlob = null, questionDuration = 0) {
     const personality = PERSONALITIES[state.personalityIndex];
 
     try {
@@ -1705,6 +1744,89 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
         const parsed = parseInt(qaBlock.dataset.txIndex, 10);
         if (!Number.isNaN(parsed)) idx = parsed;
       }
+      // Fallback for redo: if in interview mode and idx still null, derive from block position
+      // so we replace in place instead of appending (avoids duplicate Q/A in transcript for feedback)
+      if (idx === null && txMode === 'interview' && qaBlock && elements.qaContainer) {
+        const blocks = elements.qaContainer.querySelectorAll('.qa-block');
+        const blockIndex = Array.from(blocks).indexOf(qaBlock);
+        if (blockIndex >= 0 && (blockIndex * 2) < targetArray.length) {
+          idx = blockIndex * 2;
+          if (qaBlock.dataset) qaBlock.dataset.txIndex = String(idx);
+        }
+      }
+
+      // Calculate segment index (each Q/A pair is one segment, transcript has Q and A as separate entries)
+      // Segment index = floor(transcript index / 2)
+      let segmentIndex = null;
+      if (idx !== null) {
+        segmentIndex = Math.floor(idx / 2);
+      } else {
+        // New segment - calculate from current transcript length
+        segmentIndex = Math.floor(targetArray.length / 2);
+      }
+
+      // Handle audio segment storage (only for interview mode)
+      if (txMode === 'interview') {
+        const isRedo = idx !== null && segmentIndex < state.audioSegments.length;
+        
+        // Delete old audio files if redoing
+        if (isRedo && state.audioSegments[segmentIndex]) {
+          const oldSegment = state.audioSegments[segmentIndex];
+          if (oldSegment.questionAudioPath) {
+            await deleteAudioFromStorage(oldSegment.questionAudioPath);
+          }
+          if (oldSegment.answerAudioPath) {
+            await deleteAudioFromStorage(oldSegment.answerAudioPath);
+          }
+        }
+
+        // Upload question audio if available
+        let questionAudioUrl = null;
+        let questionAudioPath = null;
+        if (questionAudioBlob) {
+          const questionFileName = `question_${segmentIndex}_${Date.now()}.webm`;
+          let uploadResult = null;
+          try {
+            uploadResult = await uploadAudioToStorage(questionAudioBlob, questionFileName);
+          } catch (error) {
+            console.error('Error uploading question audio, retrying once:', error);
+            try {
+              uploadResult = await uploadAudioToStorage(questionAudioBlob, `question_${segmentIndex}_${Date.now()}.webm`);
+            } catch (retryErr) {
+              console.error('Retry uploading question audio failed:', retryErr);
+            }
+          }
+          if (uploadResult?.downloadURL) questionAudioUrl = uploadResult.downloadURL;
+          if (uploadResult?.storagePath) questionAudioPath = uploadResult.storagePath;
+        } else {
+          console.warn('Interview question was not recorded (no audio blob). Check mic permission and try speaking again for future questions.');
+        }
+
+        // Answer audio will be uploaded after TTS synthesis (see below)
+        // Store segment data structure (answer audio will be added later)
+        const segmentData = {
+          segmentIndex: segmentIndex,
+          questionText: userQuery,
+          answerText: trimmedResponse,
+          questionAudioUrl: questionAudioUrl,
+          questionAudioPath: questionAudioPath,
+          answerAudioUrl: null, // Will be set after TTS
+          answerAudioPath: null, // Will be set after TTS
+          startTime: 0, // Will be calculated during concatenation
+          endTime: 0, // Will be calculated during concatenation
+          feedback: null // Will be generated when displaying player
+        };
+
+        if (isRedo) {
+          // Overwrite existing segment
+          state.audioSegments[segmentIndex] = segmentData;
+        } else {
+          // Add new segment
+          state.audioSegments.push(segmentData);
+        }
+        // Persist segment (with question audio URLs) so we don't lose them before answer TTS completes
+        scheduleSave();
+      }
 
       if (idx !== null && typeof idx === 'number' && idx >= 0 && idx < targetArray.length) {
         // replace existing Q/A pair
@@ -1747,7 +1869,48 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
       // Only synthesize speech if we have valid text
       if (trimmedResponse && trimmedResponse.trim() !== '') {
       synthesizeSpeech(trimmedResponse, voiceName)
-        .then(audioContent => {
+        .then(async (audioContent) => {
+          // Store answer audio for interview mode
+          if (txMode === 'interview' && segmentIndex !== null) {
+            try {
+              // Convert base64 to blob
+              const binaryString = atob(audioContent);
+              const bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+              const answerAudioBlob = new Blob([bytes], { type: 'audio/mp3' });
+              
+              // Upload answer audio
+              const answerFileName = `answer_${segmentIndex}_${Date.now()}.mp3`;
+              let uploadResult = null;
+              try {
+                uploadResult = await uploadAudioToStorage(answerAudioBlob, answerFileName);
+              } catch (uploadErr) {
+                console.error('Error uploading answer audio, retrying once:', uploadErr);
+                try {
+                  uploadResult = await uploadAudioToStorage(answerAudioBlob, `answer_${segmentIndex}_${Date.now()}.mp3`);
+                } catch (retryErr) {
+                  console.error('Retry uploading answer audio failed:', retryErr);
+                }
+              }
+              if (uploadResult?.downloadURL && uploadResult?.storagePath && state.audioSegments[segmentIndex]) {
+                state.audioSegments[segmentIndex].answerAudioUrl = uploadResult.downloadURL;
+                state.audioSegments[segmentIndex].answerAudioPath = uploadResult.storagePath;
+                state.audioSegments[segmentIndex].answerText = trimmedResponse;
+                scheduleSave();
+                // Persist immediately so answer URLs are not lost if user closes tab before debounced save
+                saveStateToFirestore();
+              } else if (state.audioSegments[segmentIndex] && !uploadResult?.downloadURL) {
+                console.warn(`Segment ${segmentIndex}: answer audio upload failed or did not return URL`);
+              } else if (!state.audioSegments[segmentIndex]) {
+                console.warn(`Segment ${segmentIndex} not found when trying to update answer audio`);
+              }
+            } catch (error) {
+              console.error('Error storing answer audio:', error);
+            }
+          }
+
           // create audio object for this response
           const audioObj = new Audio(`data:audio/mp3;base64,${audioContent}`);
 
@@ -1832,6 +1995,668 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
       console.error('Error processing response:', error);
     }
   }
+
+  /**
+   * Concatenates audio segments into a single continuous audio track using Web Audio API
+   * @param {Array} segments - Array of audio segment objects with audio URLs
+   * @returns {Promise<{audioBuffer: AudioBuffer, segmentBoundaries: Array}>} Promise resolving with concatenated audio and segment boundaries
+   */
+  async function concatenateAudioSegments(segments) {
+    try {
+      const hasAnyAudioData = (segments || []).some(s => !!(s && (s.questionAudioUrl || s.answerAudioUrl || s.questionAudioPath || s.answerAudioPath)));
+      if (!hasAnyAudioData && (segments || []).length > 0) {
+        throw new Error('NO_AUDIO_DATA_ON_SEGMENTS');
+      }
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const audioBuffers = [];
+      const segmentBoundaries = [0]; // End time of each segment (Q+A pair)
+      let totalDuration = 0;
+
+      // Load all audio files and track segment boundaries
+      for (let i = 0; i < segments.length; i++) {
+        const segment = segments[i];
+        const segmentStartTime = totalDuration;
+        
+        // Add question audio if available
+        if (segment.questionAudioUrl) {
+          try {
+            // Try using Firebase Storage SDK - extract path from URL if needed
+            let arrayBuffer;
+            let storagePath = segment.questionAudioPath;
+            
+            // If no path but we have URL, try to extract path from Firebase Storage URL
+            if (!storagePath && segment.questionAudioUrl && segment.questionAudioUrl.includes('firebasestorage.googleapis.com')) {
+              try {
+                const urlObj = new URL(segment.questionAudioUrl);
+                // Extract path from URL: /v0/b/BUCKET/o/PATH?alt=media&token=TOKEN
+                const pathMatch = urlObj.pathname.match(/\/o\/(.+)\?/);
+                if (pathMatch && pathMatch[1]) {
+                  storagePath = decodeURIComponent(pathMatch[1]);
+                }
+              } catch (e) {
+                // Path extraction failed, will fall back to URL
+              }
+            }
+            
+            // Use Firebase Storage SDK - getDownloadURL instead of getBytes to avoid CORS
+            if (storagePath && storage && getDownloadURL) {
+              try {
+                const storageRef = ref(storage, storagePath);
+                const downloadURL = await getDownloadURL(storageRef);
+                // Use the signed download URL - this should work if CORS is configured
+                const response = await fetch(downloadURL, {
+                  method: 'GET',
+                  mode: 'cors',
+                  credentials: 'omit'
+                });
+                if (!response.ok) {
+                  throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                arrayBuffer = await response.arrayBuffer();
+              } catch (storageError) {
+                console.error(`✗ getDownloadURL/fetch failed for question segment ${i}:`, storageError);
+                console.error(`  Error details:`, {message: storageError.message, name: storageError.name, code: storageError.code});
+                // Try using the original URL if available
+                if (segment.questionAudioUrl) {
+                  console.warn(`  Attempting fallback to original URL...`);
+                  try {
+                    const response = await fetch(segment.questionAudioUrl, {
+                      method: 'GET',
+                      mode: 'cors',
+                      credentials: 'omit'
+                    });
+                    if (!response.ok) {
+                      throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    arrayBuffer = await response.arrayBuffer();
+                  } catch (fetchError) {
+                    console.error(`✗ Fallback fetch also failed:`, fetchError);
+                    throw new Error(`All methods failed: ${storageError.message}, ${fetchError.message}`);
+                  }
+                } else {
+                  throw storageError;
+                }
+              }
+            } else {
+              // No path available - fetch will likely fail due to CORS
+              const response = await fetch(segment.questionAudioUrl);
+              arrayBuffer = await response.arrayBuffer();
+            }
+            
+            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            audioBuffers.push(audioBuffer);
+            totalDuration += audioBuffer.duration;
+          } catch (error) {
+            console.error(`Error loading question audio for segment ${i}:`, error);
+          }
+        }
+        
+        // Add answer audio if available
+        if (segment.answerAudioUrl) {
+          try {
+            
+            // Try using Firebase Storage SDK - extract path from URL if needed
+            let arrayBuffer;
+            let storagePath = segment.answerAudioPath;
+            
+            // If no path but we have URL, try to extract path from Firebase Storage URL
+            if (!storagePath && segment.answerAudioUrl && segment.answerAudioUrl.includes('firebasestorage.googleapis.com')) {
+              try {
+                const urlObj = new URL(segment.answerAudioUrl);
+                console.log(`Extracting path from answer URL: ${urlObj.pathname}`);
+                // Extract path from URL: /v0/b/BUCKET/o/PATH?alt=media&token=TOKEN
+                const pathMatch = urlObj.pathname.match(/\/o\/(.+)\?/);
+                if (pathMatch && pathMatch[1]) {
+                  storagePath = decodeURIComponent(pathMatch[1]);
+                }
+              } catch (e) {
+                // Path extraction failed, will fall back to URL
+              }
+            }
+            
+            // Use Firebase Storage SDK - getDownloadURL instead of getBytes to avoid CORS
+            if (storagePath && storage && getDownloadURL) {
+              try {
+                const storageRef = ref(storage, storagePath);
+                const downloadURL = await getDownloadURL(storageRef);
+                // Use the signed download URL - this should work if CORS is configured
+                const response = await fetch(downloadURL, {
+                  method: 'GET',
+                  mode: 'cors',
+                  credentials: 'omit'
+                });
+                if (!response.ok) {
+                  throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                arrayBuffer = await response.arrayBuffer();
+              } catch (storageError) {
+                // Try using the original URL if available
+                if (segment.answerAudioUrl) {
+                  try {
+                    const response = await fetch(segment.answerAudioUrl, {
+                      method: 'GET',
+                      mode: 'cors',
+                      credentials: 'omit'
+                    });
+                    if (!response.ok) {
+                      throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    arrayBuffer = await response.arrayBuffer();
+                  } catch (fetchError) {
+                    throw new Error(`All methods failed: ${storageError.message}, ${fetchError.message}`);
+                  }
+                } else {
+                  throw storageError;
+                }
+              }
+            } else {
+              // No path available - fetch will likely fail due to CORS
+              const response = await fetch(segment.answerAudioUrl);
+              arrayBuffer = await response.arrayBuffer();
+            }
+            
+            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            audioBuffers.push(audioBuffer);
+            totalDuration += audioBuffer.duration;
+          } catch (error) {
+            console.error(`Error loading answer audio for segment ${i}:`, error);
+          }
+        }
+        
+        // Record segment boundary (end of this Q/A pair)
+        segmentBoundaries.push(totalDuration);
+        
+        // Update segment timing
+        segment.startTime = segmentStartTime;
+        segment.endTime = totalDuration;
+      }
+
+      // Concatenate all audio buffers
+      if (audioBuffers.length === 0) {
+        throw new Error('FETCH_FAILED_NO_AUDIO_BUFFERS');
+      }
+      
+      const sampleRate = audioContext.sampleRate;
+      const totalLength = audioBuffers.reduce((sum, buffer) => sum + buffer.length, 0);
+      const concatenatedBuffer = audioContext.createBuffer(
+        audioBuffers[0]?.numberOfChannels || 1,
+        totalLength,
+        sampleRate
+      );
+
+      let offset = 0;
+      for (const buffer of audioBuffers) {
+        for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+          const channelData = concatenatedBuffer.getChannelData(channel);
+          const sourceData = buffer.getChannelData(channel);
+          channelData.set(sourceData, offset);
+        }
+        offset += buffer.length;
+      }
+
+      return { audioBuffer: concatenatedBuffer, segmentBoundaries, audioContext };
+    } catch (error) {
+      console.error('Error concatenating audio segments:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Generates feedback for a specific segment
+   * @param {Object} segment - Segment object with question and answer text
+   * @param {number} segmentIndex - Index of the segment in the audioSegments array
+   * @returns {Promise<string>} Promise resolving with feedback text
+   */
+  async function generateSegmentFeedback(segment, segmentIndex) {
+    try {
+      // Build full interview context from all segments up to and including this one
+      let interviewContext = '';
+      if (Array.isArray(state.audioSegments) && state.audioSegments.length > 0) {
+        const contextSegments = state.audioSegments.slice(0, segmentIndex + 1);
+        interviewContext = contextSegments.map((seg, idx) => {
+          return `Question ${idx + 1}: "${seg.questionText}"\nAnswer ${idx + 1}: "${seg.answerText || 'No answer yet'}"`;
+        }).join('\n\n');
+      }
+
+      const prompt = `You are a feedback coach for a high school journalism student. Review the following interview question in the context of the entire interview so far.
+
+FULL INTERVIEW CONTEXT (all questions and answers up to this point):
+${interviewContext}
+
+CURRENT QUESTION TO EVALUATE:
+"${segment.questionText}"
+
+Provide concise, structured feedback focusing ONLY on the quality of this specific question. Keep each section brief (1-2 sentences max). Format your response as follows:
+
+**Strengths:**
+[One brief sentence about what makes this question effective]
+
+**Weaknesses:**
+[One brief sentence about what could be improved]
+
+**Scaffolded Suggestions:**
+[One brief, actionable suggestion with a quick example]
+
+**Metacognitive Question:**
+[Generate one clear, simple question that guides the student to practice writing an improved question based on the scaffolded suggestion. The question should:
+- Use simple, easy-to-understand language appropriate for high school students
+- Directly reference the specific improvement mentioned in the scaffolded suggestion
+- Give clear cues about what the student should do (e.g., "write a question that...", "create a question that...", "formulate a question that...")
+- Be actionable and specific enough that the student knows exactly what to do
+- Start with phrases like "How would you write...", "What question would you ask that...", or "Can you create a question that..."
+
+After the question, provide an example answer on a new line starting with "Example answer:". The example should be a simple, direct sentence that shows a sample question. Start with "e.g., I might ask something like" followed by the sample question. Keep it brief and focused - no bullets, no rationale, just the example.
+
+Format:
+[The metacognitive question]
+
+Example answer: e.g., I might ask something like [sample question here]
+
+Examples:
+- Question: "How would you write a question that's more targeted and gets straight to the point?"
+  Example answer: e.g., I might ask something like "What specific moment made you decide to pursue this career?"
+- Question: "What question would you ask that gives the interviewee more room to share their story?"
+  Example answer: e.g., I might ask something like "Can you walk me through a time when you faced a significant challenge in your work?"
+
+Keep the question simple, direct, and easy to understand.]
+
+Keep the feedback specific, constructive, and encouraging. Focus on question formulation, clarity, depth, and appropriateness for journalism interviewing.`;
+      
+      const feedback = await callClaude(prompt);
+      return feedback.trim();
+    } catch (error) {
+      console.error('Error generating segment feedback:', error);
+      return 'Feedback generation failed. Please try again.';
+    }
+  }
+
+  /**
+   * Creates and displays the audio player with progress bar and segment markers
+   * @param {HTMLElement} container - Container element to append player to
+   */
+  async function displayAudioPlayer(container) {
+    if (!container || !Array.isArray(state.audioSegments) || state.audioSegments.length === 0) {
+      return;
+    }
+
+    // Remove existing player if present
+    const existingPlayer = container.querySelector('.audio-player-container');
+    if (existingPlayer) {
+      existingPlayer.remove();
+    }
+
+    // Create player container
+    const playerContainer = document.createElement('div');
+    playerContainer.classList.add('audio-player-container');
+
+    const title = document.createElement('h3');
+    title.classList.add('audio-player-title');
+    title.textContent = 'Interview Audio Playback';
+    playerContainer.appendChild(title);
+
+    // Show loading state
+    const loadingDiv = document.createElement('div');
+    loadingDiv.classList.add('audio-loading');
+    loadingDiv.textContent = 'Loading and concatenating audio segments...';
+    playerContainer.appendChild(loadingDiv);
+
+    // Insert at the beginning of container
+    if (container.firstChild) {
+      container.insertBefore(playerContainer, container.firstChild);
+    } else {
+      container.appendChild(playerContainer);
+    }
+
+    try {
+      // Concatenate audio segments
+      const { audioBuffer, segmentBoundaries, audioContext } = await concatenateAudioSegments(state.audioSegments);
+      
+      // Remove loading
+      loadingDiv.remove();
+
+      // Create audio source from buffer (will be recreated on each play)
+      let currentSource = null;
+      const gainNode = audioContext.createGain();
+      gainNode.connect(audioContext.destination);
+
+      // Create player UI
+      const controlsDiv = document.createElement('div');
+      controlsDiv.classList.add('audio-controls');
+
+      // Play/Pause button
+      const playPauseBtn = document.createElement('button');
+      playPauseBtn.classList.add('audio-play-pause-btn');
+      playPauseBtn.textContent = '▶';
+      playPauseBtn.dataset.playing = 'false';
+
+      // Progress bar container
+      const progressContainer = document.createElement('div');
+      progressContainer.classList.add('audio-progress-container');
+
+      const progressBar = document.createElement('div');
+      progressBar.classList.add('audio-progress-bar');
+
+      const progressFill = document.createElement('div');
+      progressFill.classList.add('audio-progress-fill');
+
+      // Add segment markers (one per Q/A pair)
+      const markersContainer = document.createElement('div');
+      markersContainer.classList.add('audio-markers');
+      
+      // Create markers for each segment (Q/A pair) - boundaries array has start (0) + end of each segment
+      for (let i = 1; i < segmentBoundaries.length; i++) {
+        const marker = document.createElement('div');
+        marker.classList.add('audio-marker');
+        marker.dataset.segmentIndex = i - 1; // Segment index (0-based)
+        const percent = (segmentBoundaries[i] / audioBuffer.duration) * 100;
+        marker.style.left = `${percent}%`;
+        marker.title = `Segment ${i}: ${state.audioSegments[i - 1]?.questionText?.substring(0, 30) || 'Q/A Pair'}...`;
+        
+        // Add click handler to show feedback for this segment
+        marker.addEventListener('click', (e) => {
+          e.stopPropagation(); // Prevent triggering progress bar click
+          const segIdx = parseInt(marker.dataset.segmentIndex);
+          
+          // Pause playback if playing
+          if (playPauseBtn.dataset.playing === 'true' && currentSource) {
+            currentSource.stop();
+            currentSource = null;
+            pausedTime += (audioContext.currentTime - startTime);
+            playPauseBtn.textContent = '▶';
+            playPauseBtn.dataset.playing = 'false';
+            if (progressInterval) {
+              clearInterval(progressInterval);
+              progressInterval = null;
+            }
+          }
+          
+          // Seek to the end of this segment
+          pausedTime = segmentBoundaries[segIdx + 1];
+          currentSegmentIndex = segIdx;
+          updateProgress();
+          
+          // Show feedback for this segment
+          showSegmentFeedback(segIdx);
+        });
+        
+        markersContainer.appendChild(marker);
+      }
+
+      progressBar.appendChild(progressFill);
+      progressBar.appendChild(markersContainer);
+      progressContainer.appendChild(progressBar);
+
+      // Time display
+      const timeDisplay = document.createElement('span');
+      timeDisplay.classList.add('audio-time-display');
+      timeDisplay.textContent = '0:00 / 0:00';
+
+      // Download button
+      controlsDiv.appendChild(playPauseBtn);
+      controlsDiv.appendChild(progressContainer);
+      controlsDiv.appendChild(timeDisplay);
+
+      // Feedback display area
+      const feedbackDiv = document.createElement('div');
+      feedbackDiv.classList.add('audio-feedback-display');
+      feedbackDiv.style.display = 'none';
+
+      const feedbackTitle = document.createElement('h4');
+      feedbackTitle.textContent = 'Segment Feedback';
+      feedbackDiv.appendChild(feedbackTitle);
+
+      // Create wrapper for structured feedback sections (similar to area feedback)
+      const feedbackContentWrapper = document.createElement('div');
+      feedbackContentWrapper.classList.add('feedback-content-wrapper');
+      feedbackDiv.appendChild(feedbackContentWrapper);
+
+      const continueBtn = document.createElement('button');
+      continueBtn.classList.add('audio-continue-btn');
+      continueBtn.textContent = 'Continue';
+      continueBtn.style.display = 'none';
+      continueBtn.addEventListener('click', () => {
+        feedbackDiv.style.display = 'none';
+        continueBtn.style.display = 'none';
+        isPausedAtSegmentEnd = false;
+        
+        // Advance to the start of the next segment
+        if (currentSegmentIndex >= 0 && currentSegmentIndex < segmentBoundaries.length - 1) {
+          // Move to the START of the next segment
+          const nextSegmentIndex = currentSegmentIndex + 1;
+          
+          // If we've reached the end of all segments, don't play
+          if (nextSegmentIndex >= segmentBoundaries.length - 1) {
+            pausedTime = audioBuffer.duration;
+            currentSegmentIndex = nextSegmentIndex - 1; // Keep at last segment
+            updateProgress();
+            return;
+          }
+          
+          // Set pausedTime to just past the boundary to ensure we're in the next segment
+          // segmentBoundaries[nextSegmentIndex] is the end of current segment / start of next
+          pausedTime = segmentBoundaries[nextSegmentIndex] + 0.01; // Small offset to be in next segment
+          currentSegmentIndex = nextSegmentIndex;
+          updateProgress();
+        }
+        
+        // Resume playback from the new position
+        if (playPauseBtn.dataset.playing === 'false') {
+          playPauseBtn.click();
+        }
+      });
+      feedbackDiv.appendChild(continueBtn);
+
+      playerContainer.appendChild(controlsDiv);
+      playerContainer.appendChild(feedbackDiv);
+
+      // Format time helper
+      const formatTime = (seconds) => {
+        if (!isFinite(seconds) || isNaN(seconds)) return '0:00';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+      };
+
+      // Track current segment
+      let currentSegmentIndex = -1;
+      let isPausedAtSegmentEnd = false;
+      let startTime = 0;
+      let pausedTime = 0;
+      let progressInterval = null;
+
+      // Update progress
+      const updateProgress = () => {
+        if (!audioBuffer || !currentSource) return;
+        
+        const currentTime = pausedTime + (audioContext.currentTime - startTime);
+        const duration = audioBuffer.duration;
+        
+        if (currentTime >= 0 && duration > 0) {
+          const percent = Math.min(100, (currentTime / duration) * 100);
+          progressFill.style.width = `${percent}%`;
+          timeDisplay.textContent = `${formatTime(currentTime)} / ${formatTime(duration)}`;
+
+          // Check if we've reached a segment boundary
+          for (let i = 0; i < segmentBoundaries.length - 1; i++) {
+            if (currentTime >= segmentBoundaries[i] && currentTime < segmentBoundaries[i + 1]) {
+              if (i !== currentSegmentIndex) {
+                currentSegmentIndex = i;
+              }
+            }
+          }
+
+          // Check if we've reached the end of a segment
+          if (currentSegmentIndex >= 0 && currentSegmentIndex < segmentBoundaries.length - 1) {
+            const segmentEnd = segmentBoundaries[currentSegmentIndex + 1];
+            // Use a threshold slightly before the end to catch it reliably, but not if we're past it
+            if (currentTime >= segmentEnd - 0.15 && currentTime < segmentEnd + 0.1 && !isPausedAtSegmentEnd && currentSource) {
+              // Pause at segment end
+              isPausedAtSegmentEnd = true;
+              currentSource.stop();
+              currentSource = null;
+              pausedTime = segmentEnd;
+              
+              // Clear progress interval
+              if (progressInterval) {
+                clearInterval(progressInterval);
+                progressInterval = null;
+              }
+              
+              // Update UI
+              playPauseBtn.textContent = '▶';
+              playPauseBtn.dataset.playing = 'false';
+              
+              // Show feedback for this segment
+              showSegmentFeedback(currentSegmentIndex);
+            }
+          }
+        }
+      };
+
+      // Show feedback for segment
+      const showSegmentFeedback = async (segmentIdx) => {
+        const segment = state.audioSegments[segmentIdx];
+        if (!segment) return;
+
+        // Show feedback div immediately
+        feedbackDiv.style.display = 'block';
+        continueBtn.style.display = 'block';
+
+        // Generate feedback if not already cached
+        if (!segment.feedback) {
+          feedbackContentWrapper.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Generating feedback...</div>';
+          try {
+            segment.feedback = await generateSegmentFeedback(segment, segmentIdx);
+            // Save to Firestore - ensure feedback is persisted
+            state.audioSegments[segmentIdx].feedback = segment.feedback;
+            scheduleSave();
+          } catch (error) {
+            console.error('Error generating feedback:', error);
+            feedbackContentWrapper.innerHTML = '<div style="padding: 20px; text-align: center; color: #d32f2f;">Error generating feedback. Please try again.</div>';
+            return;
+          }
+        }
+
+        // Parse markdown feedback and render using same structure as areas/general feedback
+        // Pass segment index so metacognitive answers can be stored per segment
+        feedbackContentWrapper.dataset.segmentIndex = segmentIdx;
+        renderAudioFeedback(segment.feedback, feedbackContentWrapper);
+      };
+
+      // Play/Pause handler
+      playPauseBtn.addEventListener('click', () => {
+        if (playPauseBtn.dataset.playing === 'true') {
+          // Pause
+          if (currentSource) {
+            currentSource.stop();
+            currentSource = null;
+          }
+          pausedTime += (audioContext.currentTime - startTime);
+          playPauseBtn.textContent = '▶';
+          playPauseBtn.dataset.playing = 'false';
+          
+          // Clear progress interval
+          if (progressInterval) {
+            clearInterval(progressInterval);
+            progressInterval = null;
+          }
+        } else {
+          // Play
+          // Clear the paused-at-segment-end flag when manually playing
+          if (isPausedAtSegmentEnd) {
+            isPausedAtSegmentEnd = false;
+            // Hide feedback when manually resuming
+            feedbackDiv.style.display = 'none';
+            continueBtn.style.display = 'none';
+          }
+          
+          startTime = audioContext.currentTime;
+          currentSource = audioContext.createBufferSource();
+          currentSource.buffer = audioBuffer;
+          currentSource.connect(gainNode);
+          
+          // Start from paused position
+          currentSource.start(0, pausedTime);
+          
+          playPauseBtn.textContent = '⏸';
+          playPauseBtn.dataset.playing = 'true';
+
+          // Update progress while playing
+          progressInterval = setInterval(() => {
+            if (playPauseBtn.dataset.playing === 'false' || !currentSource) {
+              clearInterval(progressInterval);
+              progressInterval = null;
+            } else {
+              updateProgress();
+            }
+          }, 100);
+
+          // Handle end of audio
+          currentSource.onended = () => {
+            playPauseBtn.textContent = '▶';
+            playPauseBtn.dataset.playing = 'false';
+            pausedTime = 0;
+            currentSource = null;
+            if (progressInterval) {
+              clearInterval(progressInterval);
+              progressInterval = null;
+            }
+          };
+        }
+      });
+
+      // Progress bar click to seek
+      progressBar.addEventListener('click', (e) => {
+        if (!audioBuffer) return;
+        const rect = progressBar.getBoundingClientRect();
+        const percent = (e.clientX - rect.left) / rect.width;
+        pausedTime = Math.max(0, Math.min(percent * audioBuffer.duration, audioBuffer.duration));
+        updateProgress();
+      });
+
+      // Download handler
+      // Initial progress update
+      updateProgress();
+    } catch (error) {
+      console.error('Error creating audio player:', error);
+      
+      const noAudioData = error.message === 'NO_AUDIO_DATA_ON_SEGMENTS';
+      const fetchFailed = error.message === 'FETCH_FAILED_NO_AUDIO_BUFFERS' || error.message.includes('Failed to fetch') || error.message.includes('CORS');
+
+      if (noAudioData) {
+        loadingDiv.innerHTML = `
+          <div style="padding: 20px;">
+            <h4 style="color: #d32f2f; margin-bottom: 12px;">No recorded audio for this interview</h4>
+            <p style="margin-bottom: 12px;">The segments for this interview don't have any audio URLs or paths saved. This usually means the question/answer audio wasn't recorded or wasn't saved to the interview state.</p>
+            <p style="margin-bottom: 12px;">For reflection playback to work, complete the interview so each Q&A is recorded and saved (e.g. use the mic and let answers be generated and stored). Then try Pause &amp; Reflect again.</p>
+            <p style="font-size: 14px; color: #666;">If you just finished recording, make sure the interview was saved (e.g. wait for auto-save or navigate back to the dashboard and re-open).</p>
+          </div>
+        `;
+      } else if (fetchFailed) {
+        loadingDiv.innerHTML = `
+          <div style="padding: 20px;">
+            <h4 style="color: #d32f2f; margin-bottom: 12px;">CORS Configuration Required</h4>
+            <p style="margin-bottom: 12px;">Audio playback requires CORS to be configured on your Firebase Storage bucket.</p>
+            <p style="margin-bottom: 12px;"><strong>To fix this:</strong></p>
+            <ol style="margin-left: 20px; margin-bottom: 12px; line-height: 1.8;">
+              <li>Go to <a href="https://console.cloud.google.com/storage/browser" target="_blank" style="color: #4a90e2;">Google Cloud Console Storage</a></li>
+              <li>Select your bucket: <code style="background: #f5f5f5; padding: 2px 6px; border-radius: 3px;">gse-aixdesign-lab.appspot.com</code> (Firebase Storage uses this GCS bucket; the name may differ from the .firebasestorage.app hostname)</li>
+              <li>Click on the "Configuration" tab</li>
+              <li>Scroll to "CORS configuration" and click "Edit"</li>
+              <li>Add a configuration that allows your app origin (e.g. <code>http://localhost:5001</code> and <code>http://127.0.0.1:5001</code>), methods GET, HEAD, OPTIONS, and response headers Content-Type, Content-Length. Save.</li>
+            </ol>
+            <p style="margin-bottom: 8px;">If you use gsutil, you can set CORS from the project file <code>storage-cors.json</code> (in the project root) with:</p>
+            <pre style="background: #f5f5f5; padding: 12px; border-radius: 4px; overflow-x: auto; margin-bottom: 12px; font-size: 12px;"><code>gsutil cors set storage-cors.json gs://gse-aixdesign-lab.appspot.com</code></pre>
+            <p style="font-size: 14px; color: #666;">After configuring CORS, refresh this page.</p>
+          </div>
+        `;
+      } else {
+        loadingDiv.textContent = `Error loading audio: ${error.message}`;
+      }
+      loadingDiv.classList.add('audio-error');
+    }
+  }
+
 
   /**
    * Builds feedback prompt for reflection/brainstorm mode
@@ -2472,36 +3297,249 @@ Respond with ONLY the JSON object, no other text.`;
   }
 
   /**
+   * Records audio from microphone using MediaRecorder API
+   * @returns {Promise<{audioBlob: Blob, duration: number}>} Promise resolving with audio blob and duration
+   */
+  async function recordAudio() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      // Determine best supported MIME type
+      let mimeType = 'audio/webm';
+      if (!MediaRecorder.isTypeSupported('audio/webm')) {
+        if (MediaRecorder.isTypeSupported('audio/ogg')) {
+          mimeType = 'audio/ogg';
+        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          mimeType = 'audio/mp4';
+        }
+      }
+      
+      const mediaRecorder = new MediaRecorder(stream, { mimeType });
+      const audioChunks = [];
+      let startTime = null;
+      let duration = 0;
+      
+      const recordingPromise = new Promise((resolve, reject) => {
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            audioChunks.push(event.data);
+          }
+        };
+        
+        mediaRecorder.onstart = () => {
+          startTime = Date.now();
+        };
+        
+        mediaRecorder.onstop = async () => {
+          try {
+            duration = (Date.now() - startTime) / 1000;
+            const audioBlob = new Blob(audioChunks, { type: mimeType });
+            
+            // Stop all tracks
+            stream.getTracks().forEach(track => track.stop());
+            
+            // Get actual duration from audio blob
+            const audioUrl = URL.createObjectURL(audioBlob);
+            const audio = new Audio(audioUrl);
+            await new Promise((resolve) => {
+              audio.addEventListener('loadedmetadata', () => {
+                if (audio.duration && isFinite(audio.duration)) {
+                  duration = audio.duration;
+                }
+                URL.revokeObjectURL(audioUrl);
+                resolve();
+              });
+              audio.addEventListener('error', () => {
+                URL.revokeObjectURL(audioUrl);
+                resolve(); // Use recorded duration if metadata fails
+              });
+            });
+            
+            resolve({ audioBlob, duration });
+          } catch (error) {
+            stream.getTracks().forEach(track => track.stop());
+            reject(error);
+          }
+        };
+        
+        mediaRecorder.onerror = (event) => {
+          stream.getTracks().forEach(track => track.stop());
+          reject(event.error || new Error('Recording failed'));
+        };
+      });
+      
+      // Start recording with timeslice to ensure data is available
+      mediaRecorder.start(100);
+      
+      return {
+        recorder: mediaRecorder,
+        stop: () => {
+          if (mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+          }
+        },
+        promise: recordingPromise
+      };
+    } catch (error) {
+      console.error('Error accessing microphone:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Uploads audio blob to Firebase Storage
+   * @param {Blob} audioBlob - Audio blob to upload
+   * @param {string} fileName - Name for the audio file
+   * @returns {Promise<{downloadURL: string, storagePath: string}>} Promise resolving with download URL and storage path
+   */
+  async function uploadAudioToStorage(audioBlob, fileName) {
+    try {
+      if (!currentUser || !interviewId) {
+        throw new Error('User not authenticated or interview ID missing');
+      }
+      
+      const storagePath = `interviews/${currentUser.uid}/${interviewId}/audio/${fileName}`;
+      const storageRef = ref(storage, storagePath);
+      await uploadBytes(storageRef, audioBlob);
+      const downloadURL = await getDownloadURL(storageRef);
+      return { downloadURL, storagePath };
+    } catch (error) {
+      console.error('Error uploading audio to storage:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Deletes audio file from Firebase Storage
+   * @param {string} storagePath - Storage path of the file to delete
+   */
+  async function deleteAudioFromStorage(storagePath) {
+    try {
+      if (!currentUser || !interviewId || !storagePath) return;
+      const storageRef = ref(storage, storagePath);
+      await deleteObject(storageRef);
+    } catch (error) {
+      console.error('Error deleting audio from storage:', error);
+      // Don't throw - deletion failure is not critical
+    }
+  }
+
+  /**
    * Captures speech input from microphone + handles UI changes
+   * Also records audio if in interview mode
+   * @returns {Promise<{transcript: string, audioBlob: Blob|null, duration: number}>} Promise resolving with transcript and optional audio
    */
   async function captureSpeech() {
-    return new Promise((resolve, reject) => {
-      const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-      recognition.lang = 'en-US';
-      recognition.interimResults = false;
-      recognition.maxAlternatives = 1;
+    return new Promise(async (resolve, reject) => {
+      try {
+        // Start audio recording (only for interview mode)
+        let recording = null;
+        if (!state.inBrainstormMode && !state.inReflectionMode) {
+          try {
+            recording = await recordAudio();
+          } catch (recordingError) {
+            console.warn('Audio recording failed, continuing with speech recognition only:', recordingError);
+          }
+        }
 
-      recognition.onstart = () => {
-        elements.micButton.querySelector('img').src = IMAGES.micClicked;
-      };
+        const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+        recognition.lang = 'en-US';
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
 
-      recognition.onresult = (event) => {
-        const speechResult = event.results[0][0].transcript;
-        console.log('Speech received: ', speechResult);
-        resolve(speechResult);
-      };
+        let transcript = null;
+        let recognitionComplete = false;
 
-      recognition.onerror = (event) => {
-        console.error('Error capturing speech: ', event.error);
-        reject(event.error);
-      };
+        recognition.onstart = () => {
+          elements.micButton.querySelector('img').src = IMAGES.micClicked;
+        };
 
-      recognition.onend = () => {
+        recognition.onresult = async (event) => {
+          transcript = event.results[0][0].transcript;
+          console.log('Speech received: ', transcript);
+          recognitionComplete = true;
+          
+          // Stop recording when recognition completes
+          if (recording) {
+            recording.stop();
+          }
+          
+          try {
+            if (recording) {
+              const { audioBlob, duration } = await recording.promise;
+              elements.micButton.querySelector('img').src = IMAGES.mic;
+              resolve({ transcript, audioBlob, duration });
+            } else {
+              elements.micButton.querySelector('img').src = IMAGES.mic;
+              resolve({ transcript, audioBlob: null, duration: 0 });
+            }
+          } catch (recordingError) {
+            console.error('Error getting audio blob:', recordingError);
+            elements.micButton.querySelector('img').src = IMAGES.mic;
+            // Still resolve with transcript even if audio failed
+            resolve({ transcript, audioBlob: null, duration: 0 });
+          }
+        };
+
+        recognition.onerror = async (event) => {
+          console.error('Error capturing speech: ', event.error);
+          if (recording) {
+            recording.stop();
+          }
+          recognitionComplete = true;
+          elements.micButton.querySelector('img').src = IMAGES.mic;
+          
+          // Try to get audio blob even if recognition failed
+          if (recording) {
+            try {
+              const { audioBlob, duration } = await recording.promise;
+              if (event.error !== 'no-speech') {
+                reject(event.error);
+              } else {
+                resolve({ transcript: null, audioBlob, duration });
+              }
+            } catch (recordingError) {
+              if (event.error !== 'no-speech') {
+                reject(event.error);
+              } else {
+                reject(new Error('No speech detected'));
+              }
+            }
+          } else {
+            if (event.error !== 'no-speech') {
+              reject(event.error);
+            } else {
+              reject(new Error('No speech detected'));
+            }
+          }
+        };
+
+        recognition.onend = () => {
+          if (!recognitionComplete && recording) {
+            // Recognition ended without result - stop recording
+            recording.stop();
+            elements.micButton.querySelector('img').src = IMAGES.mic;
+            recording.promise.then(({ audioBlob, duration }) => {
+              resolve({ transcript: null, audioBlob, duration });
+            }).catch(() => {
+              reject(new Error('Speech recognition ended without result'));
+            });
+          } else if (!recognitionComplete) {
+            elements.micButton.querySelector('img').src = IMAGES.mic;
+            reject(new Error('Speech recognition ended without result'));
+          } else {
+            elements.micButton.querySelector('img').src = IMAGES.mic;
+            console.log('Speech recognition service disconnected');
+          }
+        };
+
+        // Start both recognition and recording
+        recognition.start();
+      } catch (error) {
+        console.error('Error in captureSpeech:', error);
         elements.micButton.querySelector('img').src = IMAGES.mic;
-        console.log('Speech recognition service disconnected');
-      };
-
-      recognition.start();
+        reject(error);
+      }
     });
   }
 
@@ -2911,15 +3949,23 @@ Respond with ONLY the JSON object, no other text.`;
    */
   async function handleMicClick() {
     try {
-      const userQuery = await captureSpeech();
-      if (userQuery) {
+      const speechResult = await captureSpeech();
+      if (speechResult && speechResult.transcript) {
+        const userQuery = speechResult.transcript;
         if (state.inBrainstormMode) {
           addQAtoNewContainer(userQuery, elements.brainstormQAContainer);
         } else if (state.inReflectionMode) {
           const reflectionSection = id('reflectionBlockSection') || elements.qaContainer;
           addQAtoNewContainer(userQuery, reflectionSection);
         } else {
-          await processResponse(userQuery);
+          await processResponse(
+            userQuery,
+            null,
+            null,
+            null,
+            speechResult.audioBlob || null,
+            speechResult.duration || 0
+          );
         }
       }
     } catch (error) {
@@ -3044,6 +4090,14 @@ Respond with ONLY the JSON object, no other text.`;
       // Clear area feedback cache when reflection mode begins
       state.areaFeedbackCache = {};
       state.selectedArea = null;
+      // Clear audio segment feedback so it regenerates on pause/reflect
+      if (Array.isArray(state.audioSegments)) {
+        state.audioSegments.forEach(segment => {
+          if (segment) {
+            segment.feedback = undefined;
+          }
+        });
+      }
       // Show mic button and help icon in reflection mode
       if (elements.micButton) elements.micButton.style.display = 'flex';
       const questionTipsIcon = id('questionTipsIcon');
@@ -3088,93 +4142,96 @@ Respond with ONLY the JSON object, no other text.`;
         reflectionSection.appendChild(loadingDiv);
       }
 
-      // Generate general feedback (default behavior) - always regenerate
-      console.log(state.fullTranscript);
-      feedback = await generalFeedback(state.fullTranscript);
+      // [COMMENTED OUT] Generate general feedback (default behavior) - general/cognitive/question quality feedback disabled for now
+      // console.log(state.fullTranscript);
+      // feedback = await generalFeedback(state.fullTranscript);
+      //
+      // // Cache the general feedback (replace old one)
+      // state.areaFeedbackCache['General Feedback'] = feedback;
+      //
+      // // Add date/time to general feedback module name
+      // const now = new Date();
+      // const dateTimeStr = now.toLocaleString('en-US', {
+      //   month: 'short',
+      //   day: 'numeric',
+      //   hour: '2-digit',
+      //   minute: '2-digit'
+      // });
+      // const moduleNameWithDateTime = `${moduleName} (${dateTimeStr})`;
+      //
+      // // Remove old general feedback entries from transcript (replace instead of adding)
+      // const filteredTranscript = [];
+      // for (let i = 0; i < state.reflectionTranscript.length; i++) {
+      //   const item = state.reflectionTranscript[i];
+      //   if (item.startsWith('Q: General Feedback')) {
+      //     i++;
+      //     continue;
+      //   }
+      //   filteredTranscript.push(item);
+      // }
+      // state.reflectionTranscript = filteredTranscript;
+      //
+      // // Add new general feedback to reflection transcript
+      // state.reflectionTranscript.push(`Q: ${moduleNameWithDateTime}`, `A: ${feedback}`);
+      // scheduleSave();
 
-      // Cache the general feedback (replace old one)
-      state.areaFeedbackCache['General Feedback'] = feedback;
+      // [COMMENTED OUT] Always generate new metacognitive questions (replace old ones)
+      // let questionsGenerated = false;
+      // try {
+      //   // Clear old questions and answers
+      //   state.metacognitiveQuestions = [];
+      //   state.metacognitiveAnswers = {};
+      //
+      //   // Generate new questions
+      //   state.metacognitiveQuestions = await generateMetacognitiveQuestions(state.fullTranscript);
+      //   questionsGenerated = Array.isArray(state.metacognitiveQuestions) && state.metacognitiveQuestions.length > 0;
+      //   console.log('Generated metacognitive questions:', state.metacognitiveQuestions);
+      //   scheduleSave();
+      // } catch (error) {
+      //   console.error('Error generating metacognitive questions:', error);
+      //   // Continue even if question generation fails
+      // }
 
-      // Add date/time to general feedback module name
-      const now = new Date();
-      const dateTimeStr = now.toLocaleString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      });
-      const moduleNameWithDateTime = `${moduleName} (${dateTimeStr})`;
-
-      // Remove old general feedback entries from transcript (replace instead of adding)
-      // General feedback entries are in pairs: Q: General Feedback... followed by A: ...
-      const filteredTranscript = [];
-      for (let i = 0; i < state.reflectionTranscript.length; i++) {
-        const item = state.reflectionTranscript[i];
-        // Skip if this is a General Feedback question
-        if (item.startsWith('Q: General Feedback')) {
-          // Also skip the following A: entry
-          i++; // Skip the next item (the A: answer)
-          continue;
-        }
-        filteredTranscript.push(item);
+      // Display audio player at the top FIRST, before removing loading or rendering other content
+      if (reflectionSection && Array.isArray(state.audioSegments) && state.audioSegments.length > 0) {
+        await displayAudioPlayer(reflectionSection);
       }
-      state.reflectionTranscript = filteredTranscript;
 
-      // Add new general feedback to reflection transcript
-      // Note: generalFeedback returns a string, not structured JSON
-      state.reflectionTranscript.push(`Q: ${moduleNameWithDateTime}`, `A: ${feedback}`);
-      scheduleSave();
-
-      // Always generate new metacognitive questions (replace old ones)
-      let questionsGenerated = false;
-      try {
-        // Clear old questions and answers
-        state.metacognitiveQuestions = [];
-        state.metacognitiveAnswers = {};
-        
-        // Generate new questions
-        state.metacognitiveQuestions = await generateMetacognitiveQuestions(state.fullTranscript);
-        questionsGenerated = Array.isArray(state.metacognitiveQuestions) && state.metacognitiveQuestions.length > 0;
-        console.log('Generated metacognitive questions:', state.metacognitiveQuestions);
-        scheduleSave();
-      } catch (error) {
-        console.error('Error generating metacognitive questions:', error);
-        // Continue even if question generation fails
-      }
-
-      // Remove loading placeholder
+      // Remove loading placeholder AFTER displaying audio player
       if (reflectionSection) {
         const loading = reflectionSection.querySelector('.reflection-loading');
-        if (loading) loading.remove();
+        if (loading) {
+          console.log('Removing loading placeholder');
+          loading.remove();
+        }
       }
       
-      // Render reflection transcript blocks first (which now includes the general feedback)
-      if (reflectionSection && Array.isArray(state.reflectionTranscript) && state.reflectionTranscript.length > 0) {
-        renderTranscriptBlocks(reflectionSection, state.reflectionTranscript, 'reflection');
-      }
+      // Render reflection transcript blocks AFTER audio player (preserve audio player)
+      // [COMMENTED OUT] Skip rendering feedback blocks when general feedback is disabled
+      // if (reflectionSection && Array.isArray(state.reflectionTranscript) && state.reflectionTranscript.length > 0) {
+      //   renderTranscriptBlocks(reflectionSection, state.reflectionTranscript, 'reflection');
+      // }
       
       // Render personality technique guidance section
       if (reflectionSection) {
         renderPersonalityTechniqueGuidance(reflectionSection);
       }
       
-      // Render metacognitive questions section after feedback
-      if (reflectionSection && questionsGenerated) {
-        console.log('Rendering metacognitive questions section');
-        renderMetacognitiveQuestionsSection(reflectionSection);
-      } else if (reflectionSection) {
-        console.log('Not rendering metacognitive questions - questionsGenerated:', questionsGenerated, 'questions:', state.metacognitiveQuestions);
-      }
+      // [COMMENTED OUT] Render metacognitive questions section after feedback
+      // if (reflectionSection && questionsGenerated) {
+      //   console.log('Rendering metacognitive questions section');
+      //   renderMetacognitiveQuestionsSection(reflectionSection);
+      // } else if (reflectionSection) {
+      //   console.log('Not rendering metacognitive questions - questionsGenerated:', questionsGenerated, 'questions:', state.metacognitiveQuestions);
+      // }
       
-      // Automatically select and display general feedback button
-      // Wait a bit for the areas section to be rendered
-      setTimeout(() => {
-        const generalFeedbackCard = document.querySelector('.general-feedback-card');
-        if (generalFeedbackCard) {
-          // Programmatically click the general feedback button to display it
-          generalFeedbackCard.click();
-        }
-      }, 100);
+      // [COMMENTED OUT] Automatically select and display general feedback button
+      // setTimeout(() => {
+      //   const generalFeedbackCard = document.querySelector('.general-feedback-card');
+      //   if (generalFeedbackCard) {
+      //     generalFeedbackCard.click();
+      //   }
+      // }, 100);
       
       // Ensure reflection container is visible
       const reflectionContainer = id('reflectionContainer');
@@ -3358,11 +4415,11 @@ Respond with ONLY the JSON object, no other text.`;
       contentDiv.appendChild(feedbackBlock);
       contentDiv.appendChild(iconContainer);
       
-      // Only add areas section for general feedback
-      if (isGeneralFeedback || !reflectionSection.querySelector('.areas-section')) {
-        const areasSection = createAreasSection();
-        contentDiv.appendChild(areasSection);
-      }
+      // [COMMENTED OUT] Only add areas section for general feedback (area buttons hidden)
+      // if (isGeneralFeedback || !reflectionSection.querySelector('.areas-section')) {
+      //   const areasSection = createAreasSection();
+      //   contentDiv.appendChild(areasSection);
+      // }
 
       blockDiv.appendChild(contentDiv);
 
@@ -3409,15 +4466,15 @@ Respond with ONLY the JSON object, no other text.`;
     const iconContainer = createReflectionIconContainer(feedback);
     iconContainer.classList.add('reflection-icon-container-with-margin');
     
-    // Add areas section for general feedback
-    const areasSection = createAreasSection();
+    // [COMMENTED OUT] Add areas section for general feedback (area buttons hidden)
+    // const areasSection = createAreasSection();
 
     const pauseIcon = iconContainer.querySelector('img[alt="Play"]');
 
     reflectionHeaderDiv.appendChild(reflectionHeader);
     reflectionHeaderDiv.appendChild(feedbackBlock);
     reflectionHeaderDiv.appendChild(iconContainer);
-    reflectionHeaderDiv.appendChild(areasSection);
+    // reflectionHeaderDiv.appendChild(areasSection);
 
     const reflectionPromptDiv = document.createElement('div');
     reflectionPromptDiv.classList.add('reflection-prompt');
@@ -3434,7 +4491,7 @@ Respond with ONLY the JSON object, no other text.`;
     reflectionDoneButton.classList.add('done-button');
     reflectionDoneButton.id = 'reflectionDoneButton';
     reflectionDoneButton.innerText = 'Done';
-    reflectionDoneButton.style.marginTop = '12px'; /* Keep dynamic margin */
+    reflectionDoneButton.classList.add('reflection-done-button');
     reflectionDoneButton.addEventListener('click', finishReflection);
 
     elements.qaContainer.appendChild(reflectionDoneButton);
@@ -3957,24 +5014,17 @@ Respond with ONLY the JSON object, no other text.`;
     // Header with module name and play button
     const header = document.createElement('div');
     header.classList.add('area-feedback-header');
-    header.style.display = 'flex';
-    header.style.alignItems = 'center';
-    header.style.justifyContent = 'space-between';
 
     const title = document.createElement('h3');
     title.classList.add('area-feedback-title');
     title.textContent = moduleName;
-    title.style.margin = '0';
 
     header.appendChild(title);
 
     // Add play button in header
     const playButton = createIcon(IMAGES.play, 'Play', 'Play feedback aloud');
     playButton.dataset.playing = 'false';
-    playButton.style.cursor = 'pointer';
-    playButton.style.width = '24px';
-    playButton.style.height = '24px';
-    playButton.style.marginLeft = 'auto';
+    playButton.classList.add('area-feedback-play-button');
     
     header.appendChild(playButton);
     feedbackCard.appendChild(header);
@@ -4058,14 +5108,10 @@ Respond with ONLY the JSON object, no other text.`;
     // Header with title and play button
     const header = document.createElement('div');
     header.classList.add('area-feedback-header');
-    header.style.display = 'flex';
-    header.style.alignItems = 'center';
-    header.style.justifyContent = 'space-between';
 
     const title = document.createElement('h3');
     title.classList.add('area-feedback-title');
     title.textContent = 'General Feedback';
-    title.style.margin = '0';
 
     header.appendChild(title);
 
@@ -4076,10 +5122,7 @@ Respond with ONLY the JSON object, no other text.`;
     // Add play button in header
     const playButton = createIcon(IMAGES.play, 'Play', 'Play feedback aloud');
     playButton.dataset.playing = 'false';
-    playButton.style.cursor = 'pointer';
-    playButton.style.width = '24px';
-    playButton.style.height = '24px';
-    playButton.style.marginLeft = 'auto';
+    playButton.classList.add('area-feedback-play-button');
     
     header.appendChild(playButton);
     feedbackCard.appendChild(header);
@@ -4214,28 +5257,23 @@ Respond with ONLY the JSON object, no other text.`;
             itemDiv.appendChild(claimEl);
             
             const elaborationEl = document.createElement('div');
-            elaborationEl.style.marginTop = '4px';
-            elaborationEl.style.marginBottom = '4px';
+            elaborationEl.classList.add('feedback-elaboration');
             elaborationEl.textContent = item.elaboration;
             itemDiv.appendChild(elaborationEl);
             
             const evidenceEl = document.createElement('div');
-            evidenceEl.style.fontStyle = 'italic';
-            evidenceEl.style.color = '#666';
-            evidenceEl.style.marginTop = '4px';
+            evidenceEl.classList.add('feedback-evidence');
             evidenceEl.textContent = item.evidence;
             itemDiv.appendChild(evidenceEl);
           } else if (item.prompt && item.example) {
             // Scaffolded suggestions format
             const promptEl = document.createElement('div');
-            promptEl.style.marginBottom = '8px';
+            promptEl.classList.add('feedback-prompt');
             promptEl.textContent = item.prompt;
             itemDiv.appendChild(promptEl);
             
             const exampleEl = document.createElement('div');
-            exampleEl.style.fontStyle = 'italic';
-            exampleEl.style.color = '#666';
-            exampleEl.style.paddingLeft = '16px';
+            exampleEl.classList.add('feedback-example');
             exampleEl.textContent = `Example: ${item.example}`;
             itemDiv.appendChild(exampleEl);
           } else {
@@ -4266,6 +5304,221 @@ Respond with ONLY the JSON object, no other text.`;
     section.appendChild(contentDiv);
 
     return section;
+  }
+
+  /**
+   * Parses markdown feedback text and renders it using the same structure as areas/general feedback
+   * @param {string} feedbackText - Markdown formatted feedback text
+   * @param {HTMLElement} container - Container to append feedback sections to
+   */
+  function renderAudioFeedback(feedbackText, container) {
+    if (!feedbackText || !container) return;
+
+    // Clear container
+    container.innerHTML = '';
+
+    // Parse markdown sections
+    const strengthsMatch = feedbackText.match(/\*\*Strengths:\*\*\s*\n(.*?)(?=\*\*Weaknesses:\*\*|\*\*Scaffolded Suggestions:\*\*|\*\*Metacognitive Question:\*\*|$)/s);
+    const weaknessesMatch = feedbackText.match(/\*\*Weaknesses:\*\*\s*\n(.*?)(?=\*\*Scaffolded Suggestions:\*\*|\*\*Strengths:\*\*|\*\*Metacognitive Question:\*\*|$)/s);
+    const suggestionsMatch = feedbackText.match(/\*\*Scaffolded Suggestions:\*\*\s*\n(.*?)(?=\*\*Strengths:\*\*|\*\*Weaknesses:\*\*|\*\*Metacognitive Question:\*\*|$)/s);
+    const metacognitiveMatch = feedbackText.match(/\*\*Metacognitive Question:\*\*\s*\n(.*?)(?=\*\*Strengths:\*\*|\*\*Weaknesses:\*\*|\*\*Scaffolded Suggestions:\*\*|$)/s);
+
+    // Helper to clean and split text into array items
+    const parseSection = (text) => {
+      if (!text) return [];
+      return text
+        .trim()
+        .split(/\n+/)
+        .map(line => line.trim())
+        .filter(line => line.length > 0)
+        .map(line => line.replace(/^[-•*]\s*/, '').trim()); // Remove bullet points if present
+    };
+
+    // Render Strengths section
+    if (strengthsMatch) {
+      const strengthsContent = parseSection(strengthsMatch[1]);
+      if (strengthsContent.length > 0) {
+        const strengthsSection = createFeedbackSection('Strengths', strengthsContent, 'strengths', true);
+        container.appendChild(strengthsSection);
+      }
+    }
+
+    // Render Weaknesses section (labeled as "Areas for Growth" to match areas feedback)
+    if (weaknessesMatch) {
+      const weaknessesContent = parseSection(weaknessesMatch[1]);
+      if (weaknessesContent.length > 0) {
+        const weaknessesSection = createFeedbackSection('Areas for Growth', weaknessesContent, 'weaknesses', true);
+        container.appendChild(weaknessesSection);
+      }
+    }
+
+    // Render Scaffolded Suggestions section
+    if (suggestionsMatch) {
+      const suggestionsContent = parseSection(suggestionsMatch[1]);
+      if (suggestionsContent.length > 0) {
+        const suggestionsSection = createFeedbackSection('Scaffolded Suggestions', suggestionsContent, 'suggestions', true);
+        container.appendChild(suggestionsSection);
+      }
+    }
+
+    // Render Metacognitive Question section (with input field)
+    if (metacognitiveMatch) {
+      const metacognitiveContent = metacognitiveMatch[1].trim();
+      // Extract question and example answer
+      const exampleMatch = metacognitiveContent.match(/Example answer:\s*(.+)/i);
+      let metacognitiveQuestion = metacognitiveContent;
+      let exampleAnswer = '';
+      
+      if (exampleMatch) {
+        // Split on "Example answer:" to separate question and example
+        const parts = metacognitiveContent.split(/Example answer:/i);
+        metacognitiveQuestion = parts[0].trim();
+        exampleAnswer = parts[1] ? parts[1].trim() : '';
+      } else {
+        // If no example answer format found, use the whole content as question
+        metacognitiveQuestion = metacognitiveContent.split('\n')[0].trim();
+      }
+      
+      if (metacognitiveQuestion) {
+        const metacognitiveSection = document.createElement('div');
+        metacognitiveSection.classList.add('feedback-section', 'feedback-section-metacognitive');
+        
+        const sectionTitle = document.createElement('h4');
+        sectionTitle.classList.add('feedback-section-title');
+        sectionTitle.textContent = 'Reflection Question';
+        metacognitiveSection.appendChild(sectionTitle);
+
+        // Question text
+        const questionDiv = document.createElement('div');
+        questionDiv.classList.add('metacognitive-question-item');
+        questionDiv.style.marginBottom = '12px';
+        questionDiv.style.padding = '12px';
+        questionDiv.style.backgroundColor = '#f7f9fc';
+        questionDiv.style.borderRadius = '8px';
+        
+        const questionText = document.createElement('h4');
+        questionText.classList.add('metacognitive-question-text');
+        questionText.style.margin = '0 0 12px 0';
+        questionText.style.fontSize = '16px';
+        questionText.textContent = `Q: ${metacognitiveQuestion}`;
+        questionDiv.appendChild(questionText);
+
+        // Answer container with textarea and mic button
+        const answerContainer = document.createElement('div');
+        answerContainer.classList.add('metacognitive-answer-container');
+        answerContainer.style.display = 'flex';
+        answerContainer.style.gap = '10px';
+        answerContainer.style.alignItems = 'flex-start';
+
+        const answerInput = document.createElement('textarea');
+        answerInput.classList.add('metacognitive-answer-input');
+        answerInput.style.flex = '1';
+        answerInput.style.minHeight = '80px';
+        answerInput.style.padding = '12px';
+        answerInput.style.fontSize = '14px';
+        answerInput.style.fontFamily = "'Open Sans', sans-serif";
+        answerInput.style.border = '2px solid #ddd';
+        answerInput.style.borderRadius = '8px';
+        answerInput.style.resize = 'vertical';
+        answerInput.dataset.segmentIndex = container.dataset.segmentIndex || '';
+
+        // Load existing answer if available (stored in segment), otherwise use example answer as placeholder hint
+        const segmentIndex = container.dataset.segmentIndex;
+        if (segmentIndex !== undefined && segmentIndex !== '') {
+          const segIdx = parseInt(segmentIndex, 10);
+          if (!isNaN(segIdx) && state.audioSegments[segIdx]?.metacognitiveAnswer) {
+            // User has already provided an answer, use that
+            answerInput.value = state.audioSegments[segIdx].metacognitiveAnswer;
+          } else if (exampleAnswer) {
+            // No existing answer, use example as placeholder hint
+            answerInput.placeholder = exampleAnswer;
+            answerInput.style.fontStyle = 'italic';
+          } else {
+            answerInput.placeholder = 'Type your reflection here...';
+          }
+        } else {
+          if (exampleAnswer) {
+            answerInput.placeholder = exampleAnswer;
+            answerInput.style.fontStyle = 'italic';
+          } else {
+            answerInput.placeholder = 'Type your reflection here...';
+          }
+        }
+        
+        // Remove italic styling when user starts typing (placeholder disappears automatically)
+        answerInput.addEventListener('input', function() {
+          if (this.value.length > 0) {
+            this.style.fontStyle = 'normal';
+            this.style.color = '#333';
+          }
+        });
+        
+        // Also handle when speech recognition adds text
+        answerInput.addEventListener('change', function() {
+          if (this.value.length > 0) {
+            this.style.fontStyle = 'normal';
+            this.style.color = '#333';
+          }
+        });
+
+        // Save answer on input (debounced)
+        let saveTimeout;
+        answerInput.addEventListener('input', () => {
+          clearTimeout(saveTimeout);
+          saveTimeout = setTimeout(() => {
+            if (segmentIndex !== undefined && segmentIndex !== '') {
+              const segIdx = parseInt(segmentIndex, 10);
+              if (!isNaN(segIdx) && state.audioSegments[segIdx]) {
+                if (!state.audioSegments[segIdx].metacognitiveAnswer) {
+                  state.audioSegments[segIdx].metacognitiveAnswer = '';
+                }
+                state.audioSegments[segIdx].metacognitiveAnswer = answerInput.value;
+                scheduleSave();
+              }
+            }
+          }, 1000);
+        });
+
+        // Create mic button
+        const micButton = document.createElement('button');
+        micButton.classList.add('control-button', 'metacognitive-mic-button');
+        micButton.type = 'button';
+        micButton.title = 'Click to speak your answer';
+        micButton.style.margin = '0';
+        micButton.style.padding = '8px';
+        micButton.style.display = 'flex';
+        micButton.style.alignItems = 'center';
+        micButton.style.justifyContent = 'center';
+        micButton.style.marginTop = '4px';
+
+        const micIcon = document.createElement('img');
+        micIcon.src = IMAGES.mic;
+        micIcon.alt = 'Microphone';
+        micIcon.style.width = '20px';
+        micIcon.style.height = '24px';
+        micIcon.style.objectFit = 'contain';
+        micButton.appendChild(micIcon);
+
+        // Handle mic button click
+        micButton.addEventListener('click', async () => {
+          await handleMetacognitiveMicClick(micButton, answerInput, segmentIndex);
+        });
+
+        answerContainer.appendChild(answerInput);
+        answerContainer.appendChild(micButton);
+        questionDiv.appendChild(answerContainer);
+        metacognitiveSection.appendChild(questionDiv);
+        container.appendChild(metacognitiveSection);
+      }
+    }
+
+    // Fallback: if no sections found, display as plain text
+    if (!strengthsMatch && !weaknessesMatch && !suggestionsMatch && !metacognitiveMatch) {
+      const fallbackDiv = document.createElement('div');
+      fallbackDiv.classList.add('feedback-section-content');
+      fallbackDiv.textContent = feedbackText.replace(/\*\*/g, '').trim();
+      container.appendChild(fallbackDiv);
+    }
   }
 
   /**
@@ -4684,8 +5937,7 @@ Return ONLY valid JSON, no other text.`;
     contentDiv.style.display = 'block';
     
     const loadingP = document.createElement('p');
-    loadingP.style.color = '#666';
-    loadingP.style.fontStyle = 'italic';
+    loadingP.classList.add('loading-text-gray');
     loadingP.textContent = 'Analyzing your interview techniques...';
     contentDiv.appendChild(loadingP);
     
@@ -4717,7 +5969,7 @@ Return ONLY valid JSON, no other text.`;
       
       if (!guidance || (!guidance.techniques_used_well?.length && !guidance.techniques_to_improve?.length)) {
         const noGuidanceP = document.createElement('p');
-        noGuidanceP.style.color = '#666';
+        noGuidanceP.classList.add('loading-text-gray');
         noGuidanceP.textContent = 'Continue practicing to receive technique guidance.';
         contentDiv.appendChild(noGuidanceP);
         return;
@@ -4726,9 +5978,7 @@ Return ONLY valid JSON, no other text.`;
       // Add summary if available
       if (guidance.summary) {
         const summaryP = document.createElement('p');
-        summaryP.style.marginBottom = '20px';
-        summaryP.style.color = '#555';
-        summaryP.style.lineHeight = '1.6';
+        summaryP.classList.add('summary-paragraph');
         summaryP.textContent = guidance.summary;
         contentDiv.appendChild(summaryP);
       }
@@ -4736,36 +5986,25 @@ Return ONLY valid JSON, no other text.`;
       // Add techniques used well
       if (guidance.techniques_used_well && guidance.techniques_used_well.length > 0) {
         const wellSection = document.createElement('div');
-        wellSection.style.marginBottom = '24px';
+        wellSection.classList.add('technique-well-section');
         
         const wellTitle = document.createElement('h5');
-        wellTitle.style.margin = '0 0 12px 0';
-        wellTitle.style.fontSize = '18px';
-        wellTitle.style.fontWeight = '600';
-        wellTitle.style.color = '#4caf50';
+        wellTitle.classList.add('technique-well-title');
         wellTitle.textContent = 'Techniques You\'re Using Well';
         wellSection.appendChild(wellTitle);
         
         guidance.techniques_used_well.forEach(technique => {
           const techniqueDiv = document.createElement('div');
-          techniqueDiv.style.marginBottom = '16px';
-          techniqueDiv.style.padding = '12px';
-          techniqueDiv.style.backgroundColor = '#f0f9f0';
-          techniqueDiv.style.borderRadius = '8px';
-          techniqueDiv.style.borderLeft = '4px solid #4caf50';
+          techniqueDiv.classList.add('technique-well-item');
           
           const nameP = document.createElement('p');
-          nameP.style.margin = '0 0 8px 0';
-          nameP.style.fontWeight = '600';
-          nameP.style.color = '#333';
+          nameP.classList.add('technique-well-name');
           nameP.textContent = technique.technique;
           techniqueDiv.appendChild(nameP);
           
           if (technique.example) {
             const exampleP = document.createElement('p');
-            exampleP.style.margin = '0';
-            exampleP.style.fontStyle = 'italic';
-            exampleP.style.color = '#555';
+            exampleP.classList.add('technique-well-example');
             exampleP.textContent = `Example: "${technique.example}"`;
             techniqueDiv.appendChild(exampleP);
           }
@@ -4779,57 +6018,29 @@ Return ONLY valid JSON, no other text.`;
       // Add techniques to improve
       if (guidance.techniques_to_improve && guidance.techniques_to_improve.length > 0) {
         const improveSection = document.createElement('div');
-        improveSection.style.marginBottom = '24px';
+        improveSection.classList.add('technique-improve-section');
         
         const improveTitle = document.createElement('h5');
-        improveTitle.style.margin = '0 0 12px 0';
-        improveTitle.style.fontSize = '18px';
-        improveTitle.style.fontWeight = '600';
-        improveTitle.style.color = '#ff9800';
+        improveTitle.classList.add('technique-improve-title');
         improveTitle.textContent = 'Techniques to Improve (Click on each block for more info!)';
         improveSection.appendChild(improveTitle);
         
         guidance.techniques_to_improve.forEach(technique => {
           const techniqueDiv = document.createElement('div');
-          techniqueDiv.style.marginBottom = '12px';
-          techniqueDiv.style.backgroundColor = '#fff8f0';
-          techniqueDiv.style.borderRadius = '8px';
-          techniqueDiv.style.borderLeft = '4px solid #ff9800';
-          techniqueDiv.style.overflow = 'hidden';
+          techniqueDiv.classList.add('technique-improve-item');
           
           // Create collapsible header
           const techniqueHeader = document.createElement('div');
-          techniqueHeader.style.display = 'flex';
-          techniqueHeader.style.alignItems = 'center';
-          techniqueHeader.style.padding = '12px 16px';
-          techniqueHeader.style.cursor = 'pointer';
-          techniqueHeader.style.userSelect = 'none';
-          techniqueHeader.style.transition = 'background-color 0.2s';
-          
-          // Add hover effect
-          techniqueHeader.addEventListener('mouseenter', () => {
-            techniqueHeader.style.backgroundColor = '#fff0e0';
-          });
-          techniqueHeader.addEventListener('mouseleave', () => {
-            techniqueHeader.style.backgroundColor = 'transparent';
-          });
+          techniqueHeader.classList.add('technique-header');
           
           // Collapse/expand icon
           const collapseIcon = document.createElement('span');
-          collapseIcon.style.marginRight = '12px';
-          collapseIcon.style.fontSize = '12px';
-          collapseIcon.style.color = '#666';
-          collapseIcon.style.transition = 'transform 0.2s';
-          collapseIcon.textContent = '▶';
           collapseIcon.classList.add('technique-collapse-icon');
+          collapseIcon.textContent = '▶';
           
           // Technique name
           const nameP = document.createElement('p');
-          nameP.style.margin = '0';
-          nameP.style.fontSize = '16px';
-          nameP.style.fontWeight = '600';
-          nameP.style.color = '#333';
-          nameP.style.flex = '1';
+          nameP.classList.add('technique-name');
           nameP.textContent = technique.technique;
           
           techniqueHeader.appendChild(collapseIcon);
@@ -4839,15 +6050,12 @@ Return ONLY valid JSON, no other text.`;
           // Collapsible content area
           const techniqueContent = document.createElement('div');
           techniqueContent.style.display = 'none';
-          techniqueContent.style.padding = '0 16px 16px 16px';
           techniqueContent.classList.add('technique-content');
           
           // Add description
           if (technique.description) {
             const descP = document.createElement('p');
-            descP.style.margin = '12px 0 8px 0';
-            descP.style.color = '#555';
-            descP.style.lineHeight = '1.6';
+            descP.classList.add('technique-description');
             descP.textContent = technique.description;
             techniqueContent.appendChild(descP);
           }
@@ -4855,10 +6063,7 @@ Return ONLY valid JSON, no other text.`;
           // Add current usage
           if (technique.current_usage) {
             const currentP = document.createElement('p');
-            currentP.style.margin = '0 0 12px 0';
-            currentP.style.fontSize = '14px';
-            currentP.style.color = '#666';
-            currentP.style.fontStyle = 'italic';
+            currentP.classList.add('technique-current-usage');
             currentP.textContent = `Current usage: ${technique.current_usage}`;
             techniqueContent.appendChild(currentP);
           }
@@ -4866,21 +6071,16 @@ Return ONLY valid JSON, no other text.`;
           // Add example questions
           if (technique.example_questions && technique.example_questions.length > 0) {
             const examplesTitle = document.createElement('p');
-            examplesTitle.style.margin = '12px 0 8px 0';
-            examplesTitle.style.fontWeight = '600';
-            examplesTitle.style.color = '#333';
+            examplesTitle.classList.add('technique-examples-title');
             examplesTitle.textContent = 'Example questions you could ask:';
             techniqueContent.appendChild(examplesTitle);
             
             const examplesList = document.createElement('ul');
-            examplesList.style.margin = '0 0 0 0';
-            examplesList.style.paddingLeft = '24px';
-            examplesList.style.color = '#555';
+            examplesList.classList.add('technique-examples-list');
             
             technique.example_questions.forEach(example => {
               const li = document.createElement('li');
-              li.style.marginBottom = '8px';
-              li.style.lineHeight = '1.5';
+              li.classList.add('technique-example-item');
               li.textContent = `"${example}"`;
               examplesList.appendChild(li);
             });
@@ -4916,7 +6116,7 @@ Return ONLY valid JSON, no other text.`;
       console.error('Error rendering personality technique guidance:', error);
       contentDiv.innerHTML = '';
       const errorP = document.createElement('p');
-      errorP.style.color = '#d32f2f';
+      errorP.classList.add('error-text');
       errorP.textContent = 'Error generating technique guidance. Please try again.';
       contentDiv.appendChild(errorP);
     }
@@ -4925,8 +6125,12 @@ Return ONLY valid JSON, no other text.`;
   /**
    * Renders the metacognitive questions section with collapsible UI
    * Creates question blocks with text inputs and mic buttons
+   * [COMMENTED OUT] - Section disabled
    */
   function renderMetacognitiveQuestionsSection(container) {
+    return; // [COMMENTED OUT] - Metacognitive questions section disabled
+    // eslint-disable-next-line no-unreachable
+    /*
     if (!container) {
       console.error('renderMetacognitiveQuestionsSection: container is null');
       return;
@@ -5050,12 +6254,16 @@ Return ONLY valid JSON, no other text.`;
 
     // Append to the end of the container (after feedback)
     container.appendChild(sectionDiv);
+    */
   }
 
   /**
    * Handles microphone click for metacognitive question answers
+   * @param {HTMLElement} micButton - The microphone button element
+   * @param {HTMLElement} answerInput - The textarea input element
+   * @param {number|string} questionIndexOrSegmentIndex - Either a question index (for general metacognitive questions) or segment index (for audio segment metacognitive questions)
    */
-  async function handleMetacognitiveMicClick(micButton, answerInput, questionIndex) {
+  async function handleMetacognitiveMicClick(micButton, answerInput, questionIndexOrSegmentIndex) {
     try {
       // Check if speech recognition is available
       if (!('SpeechRecognition' in window) && !('webkitSpeechRecognition' in window)) {
@@ -5104,9 +6312,26 @@ Return ONLY valid JSON, no other text.`;
         } else {
           answerInput.value = speechResult;
         }
+        
+        // Remove italic styling when speech recognition adds text (placeholder disappears automatically)
+        answerInput.style.fontStyle = 'normal';
+        answerInput.style.color = '#333';
 
-        // Save answer
-        state.metacognitiveAnswers[questionIndex] = answerInput.value;
+        // Save answer - check if this is for a segment or general metacognitive question
+        const segmentIndex = answerInput.dataset.segmentIndex;
+        if (segmentIndex !== undefined && segmentIndex !== '') {
+          // This is for an audio segment metacognitive question
+          const segIdx = parseInt(segmentIndex, 10);
+          if (!isNaN(segIdx) && state.audioSegments[segIdx]) {
+            if (!state.audioSegments[segIdx].metacognitiveAnswer) {
+              state.audioSegments[segIdx].metacognitiveAnswer = '';
+            }
+            state.audioSegments[segIdx].metacognitiveAnswer = answerInput.value;
+          }
+        } else {
+          // This is for a general metacognitive question
+          state.metacognitiveAnswers[questionIndex] = answerInput.value;
+        }
         scheduleSave();
 
         // Trigger input event to ensure save

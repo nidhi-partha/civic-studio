@@ -4,7 +4,7 @@ export async function callClaude(prompt) {
         const apiKey = await getClaudeApiKey();
 
         const requestBody = {
-            model: "claude-3-5-haiku-20241022",
+            model: "claude-haiku-4-5",
             max_tokens: 8192,
             messages: [
                 {
