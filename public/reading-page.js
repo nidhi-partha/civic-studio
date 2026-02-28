@@ -199,9 +199,9 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
     
     elements.qaContainer.innerHTML = ''; // clear old DOM
     
-    // First, render all answered questions from transcript
-    const answeredPairs = transcriptToPairs(state.fullTranscript);
-    answeredPairs.forEach((pair, pairIdx) => {
+    // First, render all answered questions from transcript (with actual indices for redo)
+    const answeredWithIndices = transcriptToPairsWithIndices(state.fullTranscript);
+    answeredWithIndices.forEach(({ pair, qIndex }) => {
       const { qaBlock, questionElement, answerElement, notesDiv } = createQAblock(pair.q, elements.qaContainer);
       
       // Fill in saved content
@@ -216,8 +216,8 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
       // Store original question in dataset (createQAblock already does this, but ensure it's set)
       qaBlock.dataset.originalQuestion = pair.q.trim();
       
-      // Mark transcript mapping (2 strings per pair)
-      const txIndex = pairIdx * 2;
+      // Mark transcript mapping: use actual index of Q in fullTranscript so redo replaces the correct slot
+      const txIndex = qIndex;
       qaBlock.dataset.txMode = 'interview';
       qaBlock.dataset.txIndex = String(txIndex);
       
@@ -244,7 +244,7 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
     if (Array.isArray(state.unansweredQuestions) && state.unansweredQuestions.length > 0) {
       // Get list of answered questions to filter them out
       // Normalize answered questions by removing "Q: " prefix and trimming
-      const answeredQuestions = answeredPairs.map(pair => {
+      const answeredQuestions = answeredWithIndices.map(({ pair }) => {
         const normalized = pair.q.trim().replace(/^Q:\s*/i, '').trim().toLowerCase();
         return normalized;
       });
@@ -951,26 +951,31 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
   function transcriptToPairs(txArr) {
     const pairs = [];
     if (!Array.isArray(txArr)) return pairs;
-  
-    // Filter out notes from the transcript array
-    const filteredTranscript = txArr.filter(item => {
-      const str = String(item || '').trim();
-      return !str.startsWith('*interviewer note*:');
-    });
-  
-    for (let i = 0; i < filteredTranscript.length; i += 2) {
-      const qRaw = filteredTranscript[i] || '';
-      const aRaw = filteredTranscript[i + 1] || '';
-  
-      const q = String(qRaw).replace(/^Q:\s*/i, '').trim();
-      const a = String(aRaw).replace(/^A:\s*/i, '').trim();
-  
-      // skip empty
+    const withIndices = transcriptToPairsWithIndices(txArr);
+    return withIndices.map((x) => x.pair);
+  }
+
+  /**
+   * Returns Q/A pairs with the actual index of each question in the raw transcript.
+   * Used so redo replaces the correct slot when transcript contains notes (e.g. *interviewer note*:).
+   */
+  function transcriptToPairsWithIndices(txArr) {
+    const result = [];
+    if (!Array.isArray(txArr)) return result;
+    for (let i = 0; i < txArr.length - 1; i++) {
+      const qRaw = txArr[i] || '';
+      const aRaw = txArr[i + 1] || '';
+      const strQ = String(qRaw).trim();
+      const strA = String(aRaw).trim();
+      if (!strQ.startsWith('Q:') && !strQ.startsWith('q:')) continue;
+      if (strQ.startsWith('*interviewer note*:')) continue;
+      const q = strQ.replace(/^Q:\s*/i, '').trim();
+      const a = strA.replace(/^A:\s*/i, '').trim();
       if (!q && !a) continue;
-  
-      pairs.push({ q, a });
+      result.push({ pair: { q, a }, qIndex: i });
+      i++; // skip the answer slot we just consumed
     }
-    return pairs;
+    return result;
   }
 
   function renderTranscriptBlocks(container, transcriptArray, mode) {
@@ -1744,16 +1749,6 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
         const parsed = parseInt(qaBlock.dataset.txIndex, 10);
         if (!Number.isNaN(parsed)) idx = parsed;
       }
-      // Fallback for redo: if in interview mode and idx still null, derive from block position
-      // so we replace in place instead of appending (avoids duplicate Q/A in transcript for feedback)
-      if (idx === null && txMode === 'interview' && qaBlock && elements.qaContainer) {
-        const blocks = elements.qaContainer.querySelectorAll('.qa-block');
-        const blockIndex = Array.from(blocks).indexOf(qaBlock);
-        if (blockIndex >= 0 && (blockIndex * 2) < targetArray.length) {
-          idx = blockIndex * 2;
-          if (qaBlock.dataset) qaBlock.dataset.txIndex = String(idx);
-        }
-      }
 
       // Calculate segment index (each Q/A pair is one segment, transcript has Q and A as separate entries)
       // Segment index = floor(transcript index / 2)
@@ -1829,13 +1824,13 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
       }
 
       if (idx !== null && typeof idx === 'number' && idx >= 0 && idx < targetArray.length) {
-        // replace existing Q/A pair
-        targetArray[idx] = `Q: ${userQuery}`;
-        // make sure there is a slot for the answer
-        if (targetArray.length > idx + 1) {
-          targetArray[idx + 1] = `A: ${trimmedResponse}`;
+        // Use actual question index: if txIndex is odd (answer slot), use previous index so we replace the full Q/A pair
+        const qIdx = idx % 2 === 0 ? idx : Math.max(0, idx - 1);
+        // Replace existing Q/A pair in place so redo removes the old question and feedback sees only the new one
+        targetArray[qIdx] = `Q: ${userQuery}`;
+        if (targetArray.length > qIdx + 1) {
+          targetArray[qIdx + 1] = `A: ${trimmedResponse}`;
         } else {
-          // append answer if missing (error handling mainly -- should be there)
           targetArray.push(`A: ${trimmedResponse}`);
         }
       } else {
