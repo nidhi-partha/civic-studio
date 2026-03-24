@@ -280,8 +280,14 @@
                     throw new Error('Interviewees is not an array or is empty');
                 }
 
-                // Slice the interviewees array to ignore the first line
-                interviewees = interviewees.slice(1, interviewees.length);
+                // Keep only lines in "name:description" format (drops header lines, keeps all valid interviewees)
+                interviewees = interviewees.filter(line => {
+                    const idx = line.indexOf(':');
+                    if (idx <= 0 || idx === line.length - 1) return false;
+                    const name = line.slice(0, idx).trim();
+                    const desc = line.slice(idx + 1).trim();
+                    return name.length > 0 && desc.length > 0;
+                });
 
                 const intervieweeList = document.getElementById('interviewee-list');
                 let guyIndex = 1;
@@ -455,7 +461,7 @@
 
         }
 
-        function goToReadingPage() {
+        async function goToReadingPage() {
             if (selectedInterviewee === '') {
                 alert('Please select an interviewee.');
                 return;
@@ -473,12 +479,37 @@
                 saveInfo();
             }
 
-            // Save selected personality
             localStorage.setItem('selectedPersonalityIndex', selectedPersonalityIndex.toString());
-            
-            // Save current interview ID (using interviewee name)
             localStorage.setItem('currentInterviewId', name);
 
+            const nextBtn = document.getElementById('next-btn');
+            const originalText = nextBtn.textContent;
+            nextBtn.disabled = true;
+            nextBtn.textContent = 'Generating background…';
+
+            try {
+                const topicText = localStorage.getItem('topicText') || '';
+                const articleText = localStorage.getItem('articleText') || '';
+                const inputMode = localStorage.getItem('inputMode') || (articleText ? 'article' : 'topic');
+                const shortDesc = selectedInterviewee; // "name: short description"
+
+                const prompt = (inputMode === 'article' && articleText)
+                    ? `You are preparing a research brief for a high school journalist who will interview ${name}. From the article below, write a brief that is easy to scan: use 1–2 short paragraphs for who ${name} is (role, expertise, background) and context, then use bullet points for key positions, claims, quotes, or story angles a student could ask about. Mix paragraphs and bullet points so it's easy to consume. The student will see this before the interview to write questions.
+
+Article:
+${articleText}`
+                    : `You are preparing a research brief for a high school journalist who will interview ${name} about the topic: "${topicText}". We know only this: "${shortDesc}". Write a brief that is easy to scan: use 1–2 short paragraphs for background and likely role, then use bullet points for key experiences, perspectives, or story angles a student could ask about. Mix paragraphs and bullet points so it's easy to consume.`;
+
+                const researchBrief = await callGemini(prompt);
+                if (researchBrief && researchBrief.trim()) {
+                    localStorage.setItem('intervieweeResearchBrief', researchBrief.trim());
+                }
+            } catch (err) {
+                console.warn('Could not generate interviewee background:', err);
+            }
+
+            nextBtn.textContent = originalText;
+            nextBtn.disabled = false;
             window.location.href = `reading-page.html?interviewId=${encodeURIComponent(name)}`;
         }
     </script>

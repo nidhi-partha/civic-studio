@@ -265,7 +265,7 @@ name:description`;
     }
 
     function buildTopicPrompt(topicText) {
-      return `You are a journalism mentor. Suggest 3 potential interviewees for a student exploring the topic "${topicText}". Make up sample names and descriptions for each interviewee. Respond ONLY in this format (one per line, max 3 lines):
+      return `You are a journalism mentor. Suggest exactly 3 potential interviewees for a student exploring the topic "${topicText}". Make up sample names and descriptions for each interviewee. You must provide exactly 3 lines in this format (no other text):
 name:description
 name:description
 name:description`;

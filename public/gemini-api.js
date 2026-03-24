@@ -29,7 +29,7 @@ export async function callGemini(prompt) {
                     temperature: 0.5,
                     topK: 40,
                     topP: 0.95,
-                    maxOutputTokens: 1024
+                    maxOutputTokens: 2048
                 }
             })
         });

@@ -91,6 +91,9 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
         applyModeUIFromState();
 
         rebuildAllBlocksFromState();
+
+        // 3) ensure we have a rich research brief for Interviewee Details (runs in background)
+        ensureIntervieweeResearchBrief().catch(err => console.warn('Interviewee research brief:', err));
     
         // Tab switching is handled by applyModeUIFromState() based on mode
         // No need to force switchToInterviewTab() here
@@ -362,6 +365,8 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
           intervieweeGender: data.intervieweeGender || '',
           intervieweeImage: data.intervieweeImage || ''
         };
+        // Use the same research brief for AI responses (so generated answers stay consistent with what the student sees)
+        state.intervieweeSummary = state.data.intervieweeInfo || state.intervieweeSummary || '';
       }
       
       // Restore personality index if saved
@@ -468,6 +473,75 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
     saveTimer = setTimeout(() => {
       saveStateToFirestore();
     }, 800);
+  }
+
+  /** Returns true if we already have a rich research brief (one long paragraph or more), so we don't need to generate. */
+  function hasRichIntervieweeBrief() {
+    const s = state.intervieweeSummary && state.intervieweeSummary.trim();
+    const i = state.data?.intervieweeInfo && state.data.intervieweeInfo.trim();
+    return (s && s.length > 300) || (i && i.length > 300);
+  }
+
+  /** Builds the prompt used to generate the interviewee research brief (facts only; no question or interview suggestions). */
+  function buildIntervieweeResearchPrompt() {
+    const { intervieweeName, articleText, topicText, inputMode, intervieweeInfo: shortDesc } = state.data || {};
+    if (!intervieweeName || (!articleText && !topicText)) return null;
+    const noQuestionsInstruction = 'Include only factual information about the interviewee. Do not include suggestions for questions to ask, "key areas to explore", "questions to explore", or any interviewing or question-writing advice.';
+    return (inputMode === 'article' && articleText)
+      ? `From the article below, write a brief that describes ${intervieweeName} only. Use 1–2 short paragraphs for who they are (role, expertise, background) and context, then use bullet points for key positions, claims, or notable quotes from or about them. Mix paragraphs and bullet points so it's easy to scan.
+
+${noQuestionsInstruction}
+
+Article:
+${articleText}`
+      : `Write a brief that describes ${intervieweeName} only, in the context of the topic: "${topicText}". We know only this: "${shortDesc || intervieweeName}". Use 1–2 short paragraphs for background and likely role, then use bullet points for key experiences, perspectives, or relevant facts about them. Mix paragraphs and bullet points so it's easy to scan.
+
+${noQuestionsInstruction}`;
+  }
+
+  /**
+   * Removes any "key areas to explore", "questions to ask", or similar interview/question suggestions
+   * from the research brief so Interviewee Details shows only factual info about the person.
+   */
+  function stripQuestionSuggestionsFromBrief(text) {
+    if (!text || typeof text !== 'string') return text;
+    const lines = text.split(/\r?\n/);
+    const out = [];
+    let skipUntilNextSection = false;
+    const questionSectionPattern = /key areas (and )?questions to explore|questions to (explore|ask)|areas to explore|suggested questions|questions you might ask|interview(ing)? (tips|suggestions|questions)/i;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (questionSectionPattern.test(line)) {
+        skipUntilNextSection = true;
+        continue;
+      }
+      if (skipUntilNextSection) {
+        const looksLikeNewSection = /^\s*(?:[\*\-]\s+|\d+\.\s+|\*\*[^*]+\*\*)/.test(line) && line.length < 80;
+        const looksLikeParagraphStart = line.trim().length > 0 && !/^[\*\-]\s/.test(line) && (i === 0 || lines[i - 1].trim() === '');
+        if (looksLikeNewSection && !questionSectionPattern.test(line)) skipUntilNextSection = false;
+        else if (looksLikeParagraphStart && line.trim().length > 40) skipUntilNextSection = false;
+        if (skipUntilNextSection) continue;
+      }
+      out.push(line);
+    }
+    return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  /**
+   * Generates the interviewee research brief on page load when we only have short info.
+   * Updates state.intervieweeSummary and state.data.intervieweeInfo so Interviewee Details and AI responses use the same rich text.
+   */
+  async function ensureIntervieweeResearchBrief() {
+    if (!state.data?.intervieweeName) return;
+    if (hasRichIntervieweeBrief()) return;
+    const prompt = buildIntervieweeResearchPrompt();
+    if (!prompt) return;
+    const researchBrief = await callGemini(prompt);
+    if (!researchBrief || !researchBrief.trim()) return;
+    const cleaned = stripQuestionSuggestionsFromBrief(researchBrief.trim());
+    state.intervieweeSummary = cleaned;
+    state.data.intervieweeInfo = state.intervieweeSummary;
+    scheduleSave();
   }
 
   function switchToBrainstormTab() {
@@ -753,7 +827,7 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
     const articleText = localStorage.getItem('articleText');
     const topicText = localStorage.getItem('topicText') || '';
     const inputMode = localStorage.getItem('inputMode') || (articleText ? 'article' : 'topic');
-    const intervieweeInfo = localStorage.getItem('selectedInterviewee');
+    const intervieweeInfo = localStorage.getItem('intervieweeResearchBrief') || localStorage.getItem('selectedInterviewee');
     const intervieweeName = localStorage.getItem('intervieweeName');
     const intervieweeGender = localStorage.getItem('intervieweeGender');
     const intervieweeImage = localStorage.getItem('selectedIntervieweeImage');
@@ -774,6 +848,10 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
       intervieweeGender,
       intervieweeImage
     };
+
+    if (intervieweeInfo && intervieweeInfo.length > 300) {
+      state.intervieweeSummary = intervieweeInfo;
+    }
 
     // Load selected personality index if available, otherwise use default (2)
     if (selectedPersonalityIndex !== null && selectedPersonalityIndex !== undefined) {
@@ -881,13 +959,19 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
         return;
       }
       
-      const { intervieweeName, articleText, topicText, inputMode } = state.data;
-      const summaryPrompt = (inputMode === 'article' && articleText)
-        ? `Can you create a summary of the responses and characteristics of ${intervieweeName} from this article: ${articleText}`
-        : `Create a concise background and likely perspective for ${intervieweeName} for an interview about the topic: "${topicText}". Include role/expertise and key traits in 4-6 sentences.`;
-      
       updateLoadingText('Generating interview...');
-      state.intervieweeSummary = await callGemini(summaryPrompt);
+      if (hasRichIntervieweeBrief()) {
+        state.data.intervieweeInfo = state.intervieweeSummary || state.data.intervieweeInfo;
+      } else {
+        const summaryPrompt = buildIntervieweeResearchPrompt();
+        if (summaryPrompt) {
+          const researchBrief = await callGemini(summaryPrompt);
+          if (researchBrief && researchBrief.trim()) {
+            state.intervieweeSummary = researchBrief.trim();
+            state.data.intervieweeInfo = state.intervieweeSummary;
+          }
+        }
+      }
 
     if (questions.length > 0) {
         // Save the list of all questions (they start as unanswered)
@@ -2391,16 +2475,16 @@ Keep the feedback specific, constructive, and encouraging. Focus on question for
       controlsDiv.appendChild(progressContainer);
       controlsDiv.appendChild(timeDisplay);
 
-      // Feedback display area
+      // Transcript / feedback display: shows Q&A while playing, feedback when segment ends
       const feedbackDiv = document.createElement('div');
       feedbackDiv.classList.add('audio-feedback-display');
-      feedbackDiv.style.display = 'none';
 
       const feedbackTitle = document.createElement('h4');
-      feedbackTitle.textContent = 'Segment Feedback';
+      feedbackTitle.textContent = 'Current segment';
+      feedbackTitle.classList.add('audio-transcript-feedback-title');
       feedbackDiv.appendChild(feedbackTitle);
 
-      // Create wrapper for structured feedback sections (similar to area feedback)
+      // Create wrapper for transcript (Q/A) or structured feedback
       const feedbackContentWrapper = document.createElement('div');
       feedbackContentWrapper.classList.add('feedback-content-wrapper');
       feedbackDiv.appendChild(feedbackContentWrapper);
@@ -2410,7 +2494,6 @@ Keep the feedback specific, constructive, and encouraging. Focus on question for
       continueBtn.textContent = 'Continue';
       continueBtn.style.display = 'none';
       continueBtn.addEventListener('click', () => {
-        feedbackDiv.style.display = 'none';
         continueBtn.style.display = 'none';
         isPausedAtSegmentEnd = false;
         
@@ -2428,10 +2511,11 @@ Keep the feedback specific, constructive, and encouraging. Focus on question for
           }
           
           // Set pausedTime to just past the boundary to ensure we're in the next segment
-          // segmentBoundaries[nextSegmentIndex] is the end of current segment / start of next
           pausedTime = segmentBoundaries[nextSegmentIndex] + 0.01; // Small offset to be in next segment
           currentSegmentIndex = nextSegmentIndex;
           updateProgress();
+          // Show the next segment's transcript before resuming play (so it's visible for all segments)
+          showSegmentTranscript(currentSegmentIndex);
         }
         
         // Resume playback from the new position
@@ -2471,12 +2555,14 @@ Keep the feedback specific, constructive, and encouraging. Focus on question for
           progressFill.style.width = `${percent}%`;
           timeDisplay.textContent = `${formatTime(currentTime)} / ${formatTime(duration)}`;
 
-          // Check if we've reached a segment boundary
+          // Check if we've reached a segment boundary and update transcript when segment changes
           for (let i = 0; i < segmentBoundaries.length - 1; i++) {
             if (currentTime >= segmentBoundaries[i] && currentTime < segmentBoundaries[i + 1]) {
               if (i !== currentSegmentIndex) {
                 currentSegmentIndex = i;
+                showSegmentTranscript(i);
               }
+              break;
             }
           }
 
@@ -2508,12 +2594,40 @@ Keep the feedback specific, constructive, and encouraging. Focus on question for
         }
       };
 
-      // Show feedback for segment
+      // Show transcript (Q and A) for the segment currently being heard
+      const showSegmentTranscript = (segmentIdx) => {
+        const segment = state.audioSegments[segmentIdx];
+        if (!segment) return;
+        feedbackTitle.textContent = 'Current segment';
+        feedbackTitle.classList.remove('feedback-mode');
+        feedbackContentWrapper.dataset.segmentIndex = segmentIdx;
+        const q = segment.questionText || '';
+        const a = segment.answerText || '';
+        const wrap = document.createElement('div');
+        wrap.className = 'audio-segment-transcript';
+        const pQ = document.createElement('p');
+        pQ.className = 'audio-transcript-q';
+        pQ.innerHTML = '<strong>Q:</strong> ';
+        pQ.appendChild(document.createTextNode(q));
+        const pA = document.createElement('p');
+        pA.className = 'audio-transcript-a';
+        pA.innerHTML = '<strong>A:</strong> ';
+        pA.appendChild(document.createTextNode(a));
+        wrap.appendChild(pQ);
+        wrap.appendChild(pA);
+        feedbackContentWrapper.innerHTML = '';
+        feedbackContentWrapper.appendChild(wrap);
+        feedbackDiv.style.display = 'block';
+        continueBtn.style.display = 'none';
+      };
+
+      // Show feedback for segment (replaces transcript when segment finishes)
       const showSegmentFeedback = async (segmentIdx) => {
         const segment = state.audioSegments[segmentIdx];
         if (!segment) return;
 
-        // Show feedback div immediately
+        feedbackTitle.textContent = 'Segment Feedback';
+        feedbackTitle.classList.add('feedback-mode');
         feedbackDiv.style.display = 'block';
         continueBtn.style.display = 'block';
 
@@ -2533,7 +2647,6 @@ Keep the feedback specific, constructive, and encouraging. Focus on question for
         }
 
         // Parse markdown feedback and render using same structure as areas/general feedback
-        // Pass segment index so metacognitive answers can be stored per segment
         feedbackContentWrapper.dataset.segmentIndex = segmentIdx;
         renderAudioFeedback(segment.feedback, feedbackContentWrapper);
       };
@@ -2607,10 +2720,21 @@ Keep the feedback specific, constructive, and encouraging. Focus on question for
         const percent = (e.clientX - rect.left) / rect.width;
         pausedTime = Math.max(0, Math.min(percent * audioBuffer.duration, audioBuffer.duration));
         updateProgress();
+        // Update transcript to match seek position when not playing
+        if (!currentSource) {
+          for (let i = 0; i < segmentBoundaries.length - 1; i++) {
+            if (pausedTime >= segmentBoundaries[i] && pausedTime < segmentBoundaries[i + 1]) {
+              currentSegmentIndex = i;
+              showSegmentTranscript(i);
+              break;
+            }
+          }
+        }
       });
 
-      // Download handler
-      // Initial progress update
+      // Initial state: show first segment transcript
+      currentSegmentIndex = 0;
+      if (state.audioSegments.length > 0) showSegmentTranscript(0);
       updateProgress();
     } catch (error) {
       console.error('Error creating audio player:', error);
@@ -6561,6 +6685,8 @@ ${transcriptContent}`;
     const { articleText, inputMode, topicText } = state.data;
 
     // If there is no article (topic-only flow), just show a friendly message
+    const articleContainer = elements.articleTextContainer.closest('.article-text-container');
+    if (articleContainer) articleContainer.classList.remove('interviewee-details-visible');
     if (!articleText || inputMode === 'topic') {
       const topicLine = topicText ? `Topic: "${topicText}"` : 'You started with a topic.';
       elements.articleTextContainer.innerHTML = `${topicLine}<br/>No article to display.`;
@@ -6584,6 +6710,7 @@ ${transcriptContent}`;
     elements.loadingIndicator.style.display = 'none';
     elements.loadingIndicator.removeChild(thinkingText);
 
+    if (articleContainer) articleContainer.classList.remove('interviewee-details-visible');
     elements.articleTextContainer.innerHTML = state.formattedArticle;
     elements.articleTextContainer.style.display = "block";
     elements.menuButtons.forEach(button => button.style.display = "none");
@@ -6591,29 +6718,105 @@ ${transcriptContent}`;
   }
 
   /**
-   * Displays interviewee information
+   * Converts simple markdown in AI-generated text to HTML: **bold** and * / - bullet lines.
+   * Escapes HTML first for safety, then applies formatting.
+   * @param {string} text - Plain text possibly containing **bold** and * or - list lines
+   * @returns {string} HTML string safe to use with innerHTML
    */
-  function displayIntervieweeInfo() {
+  function intervieweeBioMarkdownToHtml(text) {
+    if (!text || typeof text !== 'string') return '';
+    const escape = (s) => String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+    const lines = text.split(/\r?\n/);
+    const out = [];
+    let listItems = [];
+    const flushList = () => {
+      if (listItems.length) {
+        out.push('<ul class="interviewee-bio-list">');
+        listItems.forEach((item) => out.push('<li>', item, '</li>'));
+        out.push('</ul>');
+        listItems = [];
+      }
+    };
+    for (const line of lines) {
+      const bulletMatch = line.match(/^[\*\-]\s+(.*)$/);
+      if (bulletMatch) {
+        flushList();
+        let content = escape(bulletMatch[1]);
+        content = content.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        listItems.push(content);
+      } else {
+        flushList();
+        let content = escape(line);
+        content = content.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        if (content) out.push('<p class="interviewee-bio-p">', content, '</p>');
+      }
+    }
+    flushList();
+    return out.join('');
+  }
+
+  /**
+   * Displays interviewee information.
+   * If we only have the short selection description, generates the full research brief first so the full text is shown.
+   */
+  async function displayIntervieweeInfo() {
     if (!state.data) {
       console.warn('state.data is not initialized, cannot display interviewee info');
       return;
     }
-    const { intervieweeInfo, intervieweeImage, intervieweeName } = state.data;
+    const { intervieweeImage, intervieweeName } = state.data;
+    let textToShow = stripQuestionSuggestionsFromBrief((state.intervieweeSummary || state.data.intervieweeInfo || '').trim());
 
-    if (intervieweeInfo) {
+    // If we only have short text (e.g. the one-line from selection), generate the full research brief first
+    const needsFullBrief = textToShow && !hasRichIntervieweeBrief() && buildIntervieweeResearchPrompt();
+    if (needsFullBrief) {
       elements.articleTextContainer.innerHTML = `
-        <div class="interviewee-details-container">
-          <img src="${intervieweeImage}" alt="Interviewee Image" class="interviewee-avatar">
-          <div class="interviewee-name">${intervieweeName}</div>
-          <div class="interviewee-description">${intervieweeInfo}</div>
+        <div class="interviewee-details-card">
+          <div class="interviewee-details-header">
+            <img src="${intervieweeImage || ''}" alt="" class="interviewee-details-avatar">
+            <h2 class="interviewee-details-name">${(intervieweeName || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</h2>
+          </div>
+          <div class="interviewee-details-bio" role="region" aria-label="Interviewee background">Generating full background…</div>
         </div>`;
       elements.articleTextContainer.style.display = "block";
-      elements.menuButtons.forEach(button => button.style.display = "none");
+      const outer = elements.articleTextContainer.closest('.article-text-container');
+      if (outer) outer.classList.add('interviewee-details-visible');
+      elements.menuButtons.forEach(button => { button.style.display = "none"; });
+      elements.playButton.style.display = "none";
+
+      await ensureIntervieweeResearchBrief();
+      textToShow = stripQuestionSuggestionsFromBrief((state.intervieweeSummary || state.data.intervieweeInfo || '').trim());
+      const bioEl = elements.articleTextContainer.querySelector('.interviewee-details-bio');
+      if (bioEl) bioEl.innerHTML = intervieweeBioMarkdownToHtml(textToShow);
+      return;
+    }
+
+    if (textToShow) {
+      elements.articleTextContainer.innerHTML = `
+        <div class="interviewee-details-card">
+          <div class="interviewee-details-header">
+            <img src="${intervieweeImage || ''}" alt="" class="interviewee-details-avatar">
+            <h2 class="interviewee-details-name">${(intervieweeName || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</h2>
+          </div>
+          <div class="interviewee-details-bio" role="region" aria-label="Interviewee background">...</div>
+        </div>`;
+      const bioEl = elements.articleTextContainer.querySelector('.interviewee-details-bio');
+      if (bioEl) bioEl.innerHTML = intervieweeBioMarkdownToHtml(textToShow);
+      elements.articleTextContainer.style.display = "block";
+      const outer = elements.articleTextContainer.closest('.article-text-container');
+      if (outer) outer.classList.add('interviewee-details-visible');
+      elements.menuButtons.forEach(button => { button.style.display = "none"; });
       elements.playButton.style.display = "none";
     } else {
       elements.articleTextContainer.textContent = "No interviewee information found.";
       elements.articleTextContainer.style.display = "block";
-      elements.menuButtons.forEach(button => button.style.display = "none");
+      const outer = elements.articleTextContainer.closest('.article-text-container');
+      if (outer) outer.classList.remove('interviewee-details-visible');
+      elements.menuButtons.forEach(button => { button.style.display = "none"; });
       elements.playButton.style.display = "none";
     }
   }
@@ -6646,6 +6849,8 @@ ${transcriptContent}`;
     <p><strong>10. End with Reflection:</strong> Finish with a thoughtful wrap-up question, like “Looking back, what lesson stands out most to you?” This helps the interview feel complete.</p>
   `;
 
+    const tipContainer = elements.articleTextContainer.closest('.article-text-container');
+    if (tipContainer) tipContainer.classList.remove('interviewee-details-visible');
     elements.articleTextContainer.innerHTML = questionTipsText;
     elements.articleTextContainer.style.display = "block";
     elements.menuButtons.forEach(button => button.style.display = "none");
