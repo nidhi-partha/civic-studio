@@ -14,6 +14,7 @@ import { callOpenAI } from './openai-api.js';
 import { PERSONALITIES, IMAGES, MODULES } from './reading-page-constants.js';
 import { id, qs, qsa, cacheElements } from './reading-page-dom-utils.js';
 import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton, createIcon } from './reading-page-ui-utils.js';
+import { getPersonalityScoringCriteria, scoreQuestionHeuristics, detectRepairMove } from './reading-page-scoring.js';
 
 "use strict";
 
@@ -53,6 +54,9 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
     metacognitiveAnswers: {}, // Object mapping question index to answer text
     audioSegments: [] // Array of { segmentIndex, questionText, answerText, questionAudioUrl, answerAudioUrl, questionAudioPath, answerAudioPath, startTime, endTime, feedback, metacognitiveAnswer }
   };
+
+  /** In-flight segment feedback prefetches (segment index -> Promise). Not persisted to Firestore. */
+  const segmentFeedbackPrefetchPromises = new Map();
 
   // --- DOM Elements Cache ---
   let elements = {};
@@ -486,7 +490,7 @@ import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton
   function buildIntervieweeResearchPrompt() {
     const { intervieweeName, articleText, topicText, inputMode, intervieweeInfo: shortDesc } = state.data || {};
     if (!intervieweeName || (!articleText && !topicText)) return null;
-    const noQuestionsInstruction = 'Include only factual information about the interviewee. Do not include suggestions for questions to ask, "key areas to explore", "questions to explore", or any interviewing or question-writing advice.';
+    const noQuestionsInstruction = 'Include only factual information about the interviewee. Do *NOT* include suggestions for questions to ask, "key areas to explore", "questions to explore", or any interviewing or question-writing advice.';
     return (inputMode === 'article' && articleText)
       ? `From the article below, write a brief that describes ${intervieweeName} only. Use 1–2 short paragraphs for who they are (role, expertise, background) and context, then use bullet points for key positions, claims, or notable quotes from or about them. Mix paragraphs and bullet points so it's easy to scan.
 
@@ -862,7 +866,8 @@ ${noQuestionsInstruction}`;
     }
 
     if (intervieweeGender === "female") {
-      state.voiceName = 'en-US-Journey-O';
+      // state.voiceName = 'en-US-Journey-O';
+      state.voiceName = 'en-US-Standard-F';
     }
   }
 
@@ -1060,6 +1065,25 @@ ${noQuestionsInstruction}`;
       i++; // skip the answer slot we just consumed
     }
     return result;
+  }
+
+  /**
+   * Maps a block's transcript q-line index (dataset.txIndex) to the 0-based audio segment index.
+   * Uses actual Q/A pair order (handles notes and non-adjacent lines); do not use floor(txIndex/2).
+   */
+  function getInterviewAudioSegmentIndex(targetArray, qaBlock) {
+    const pairs = transcriptToPairsWithIndices(targetArray);
+    let idx = null;
+    if (qaBlock && qaBlock.dataset && qaBlock.dataset.txIndex) {
+      const parsed = parseInt(qaBlock.dataset.txIndex, 10);
+      if (!Number.isNaN(parsed)) idx = parsed;
+    }
+    if (idx !== null) {
+      const ord = pairs.findIndex((p) => p.qIndex === idx);
+      if (ord >= 0) return ord;
+      return Math.floor(idx / 2);
+    }
+    return pairs.length;
   }
 
   function renderTranscriptBlocks(container, transcriptArray, mode) {
@@ -1834,15 +1858,8 @@ ${noQuestionsInstruction}`;
         if (!Number.isNaN(parsed)) idx = parsed;
       }
 
-      // Calculate segment index (each Q/A pair is one segment, transcript has Q and A as separate entries)
-      // Segment index = floor(transcript index / 2)
-      let segmentIndex = null;
-      if (idx !== null) {
-        segmentIndex = Math.floor(idx / 2);
-      } else {
-        // New segment - calculate from current transcript length
-        segmentIndex = Math.floor(targetArray.length / 2);
-      }
+      // Align with transcript Q/A pair order (notes between pairs break floor(txIndex/2))
+      const segmentIndex = getInterviewAudioSegmentIndex(targetArray, qaBlock);
 
       // Handle audio segment storage (only for interview mode)
       if (txMode === 'interview') {
@@ -1893,7 +1910,7 @@ ${noQuestionsInstruction}`;
           answerAudioPath: null, // Will be set after TTS
           startTime: 0, // Will be calculated during concatenation
           endTime: 0, // Will be calculated during concatenation
-          feedback: null // Will be generated when displaying player
+          feedback: null // Filled by background prefetch after each Q/A; shown when playback reaches segment end
         };
 
         if (isRedo) {
@@ -1905,6 +1922,7 @@ ${noQuestionsInstruction}`;
         }
         // Persist segment (with question audio URLs) so we don't lose them before answer TTS completes
         scheduleSave();
+        startSegmentFeedbackPrefetch(segmentIndex);
       }
 
       if (idx !== null && typeof idx === 'number' && idx >= 0 && idx < targetArray.length) {
@@ -2288,22 +2306,47 @@ ${noQuestionsInstruction}`;
    */
   async function generateSegmentFeedback(segment, segmentIndex) {
     try {
-      // Build full interview context from all segments up to and including this one
-      let interviewContext = '';
-      if (Array.isArray(state.audioSegments) && state.audioSegments.length > 0) {
-        const contextSegments = state.audioSegments.slice(0, segmentIndex + 1);
-        interviewContext = contextSegments.map((seg, idx) => {
+      // Prior segments only — then current Q/A once. Including the current pair in "full context"
+      // and again in "current question" made models think the student asked the same question twice (e.g. after redo).
+      let priorInterviewContext = '';
+      if (Array.isArray(state.audioSegments) && state.audioSegments.length > 0 && segmentIndex > 0) {
+        const priorSegments = state.audioSegments.slice(0, segmentIndex);
+        priorInterviewContext = priorSegments.map((seg, idx) => {
           return `Question ${idx + 1}: "${seg.questionText}"\nAnswer ${idx + 1}: "${seg.answerText || 'No answer yet'}"`;
         }).join('\n\n');
       }
+      const currentNum = segmentIndex + 1;
+      const currentSegmentContext =
+        `Question ${currentNum}: "${segment.questionText}"\nAnswer ${currentNum}: "${segment.answerText || 'No answer yet'}"`;
+
+      const questionTips = `1. Stay Relevant: Before asking, ask yourself “Does this connect to what the interviewee just said?” Build on their previous answer rather than changing topics suddenly.
+
+2. Go Deeper: If they mention something interesting, follow up with “Why do you think that happened?” or “Can you tell me more about that moment?” This turns surface answers into stories.
+
+3. Be Specific: Replace vague questions like “How was school?” with “What was one project at school that changed how you think?” The more specific your question, the richer the answer.
+
+4. Engage the Interviewee: Ask questions that invite personal reflection or emotion—like “What was the most exciting part of that experience?” or “What challenges did you face?”
+
+5. Ask Open-Ended Questions: Avoid yes/no questions. Instead of “Did you like it?”, try “What made that experience meaningful to you?” or “How did it change your perspective?”
+
+6. Build Progressively: Think of your questions as steps in a story. Start broad (“How did you get interested in this?”), then move toward deeper details (“What inspired your next step after that?”).
+
+7. Be Respectful and Aware: When asking about sensitive or cultural topics, phrase them with care: “If you’re comfortable sharing…” or “From your perspective, how is this viewed in your community?”
+
+8. Find Unique Angles: Try approaching a topic from a creative direction. Instead of “What’s your goal?”, ask “If you could describe your journey as a movie, what would the title be and why?”
+
+9. Listen Actively: Good questions come from listening. Take short notes and use what they say to guide your next question instead of reading from a list.
+
+10. End with Reflection: Finish with a thoughtful wrap-up question, like “Looking back, what lesson stands out most to you?” This helps the interview feel complete.`;
+
 
       const prompt = `You are a feedback coach for a high school journalism student. Review the following interview question in the context of the entire interview so far.
 
-FULL INTERVIEW CONTEXT (all questions and answers up to this point):
-${interviewContext}
+PRIOR INTERVIEW CONTEXT (earlier Q/A pairs only — not the segment under review):
+${priorInterviewContext || '(None — this is the first question in the interview.)'}
 
-CURRENT QUESTION TO EVALUATE:
-"${segment.questionText}"
+CURRENT SEGMENT TO EVALUATE (the question text below appears only here; give feedback only on this question):
+${currentSegmentContext}
 
 Provide concise, structured feedback focusing ONLY on the quality of this specific question. Keep each section brief (1-2 sentences max). Format your response as follows:
 
@@ -2311,7 +2354,7 @@ Provide concise, structured feedback focusing ONLY on the quality of this specif
 [One brief sentence about what makes this question effective]
 
 **Weaknesses:**
-[One brief sentence about what could be improved]
+[One brief sentence about what could be improved. DO NOT GIVE FEEDBACK ON GRAMMAR. THIS TRANSCRIPT QUESTION IS GENERATED THROUGH SPEECH TO TEXT AND MAY NOT REFLECT THE STUDENT'S ACTUAL QUESTION GRAMMAR. Give feedback on the intended question's content, quality, and appropriateness for interviewee.]
 
 **Scaffolded Suggestions:**
 [One brief, actionable suggestion with a quick example]
@@ -2337,6 +2380,9 @@ Examples:
 - Question: "What question would you ask that gives the interviewee more room to share their story?"
   Example answer: e.g., I might ask something like "Can you walk me through a time when you faced a significant challenge in your work?"
 
+Here are some tips for writing good questions. Use this to evaluate the question's content, quality, and appropriateness for interviewee:
+${questionTips}
+
 Keep the question simple, direct, and easy to understand.]
 
 Keep the feedback specific, constructive, and encouraging. Focus on question formulation, clarity, depth, and appropriateness for journalism interviewing.`;
@@ -2347,6 +2393,37 @@ Keep the feedback specific, constructive, and encouraging. Focus on question for
       console.error('Error generating segment feedback:', error);
       return 'Feedback generation failed. Please try again.';
     }
+  }
+
+  /**
+   * Starts generating and saving segment feedback in the background as soon as Q/A exists,
+   * so playback only needs to display cached text when the segment ends.
+   */
+  function startSegmentFeedbackPrefetch(segmentIndex) {
+    const seg = state.audioSegments[segmentIndex];
+    if (!seg || seg.feedback) return;
+    if (segmentFeedbackPrefetchPromises.has(segmentIndex)) return;
+
+    const p = generateSegmentFeedback(seg, segmentIndex)
+      .then((feedback) => {
+        const current = state.audioSegments[segmentIndex];
+        if (current === seg && feedback) {
+          seg.feedback = feedback;
+          scheduleSave();
+        }
+        return feedback;
+      })
+      .catch((err) => {
+        console.error('Prefetch segment feedback failed:', err);
+        throw err;
+      })
+      .finally(() => {
+        if (segmentFeedbackPrefetchPromises.get(segmentIndex) === p) {
+          segmentFeedbackPrefetchPromises.delete(segmentIndex);
+        }
+      });
+
+    segmentFeedbackPrefetchPromises.set(segmentIndex, p);
   }
 
   /**
@@ -2623,7 +2700,7 @@ Keep the feedback specific, constructive, and encouraging. Focus on question for
 
       // Show feedback for segment (replaces transcript when segment finishes)
       const showSegmentFeedback = async (segmentIdx) => {
-        const segment = state.audioSegments[segmentIdx];
+        let segment = state.audioSegments[segmentIdx];
         if (!segment) return;
 
         feedbackTitle.textContent = 'Segment Feedback';
@@ -2631,12 +2708,23 @@ Keep the feedback specific, constructive, and encouraging. Focus on question for
         feedbackDiv.style.display = 'block';
         continueBtn.style.display = 'block';
 
-        // Generate feedback if not already cached
-        if (!segment.feedback) {
+        const pendingPrefetch = segmentFeedbackPrefetchPromises.get(segmentIdx);
+        if (!segment.feedback && pendingPrefetch) {
+          feedbackContentWrapper.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Generating feedback...</div>';
+          try {
+            await pendingPrefetch;
+          } catch (_) {
+            /* fall through to on-demand generation */
+          }
+          segment = state.audioSegments[segmentIdx];
+        }
+
+        // Generate on demand if prefetch did not finish or legacy sessions have no feedback
+        if (!segment || !segment.feedback) {
+          if (!segment) return;
           feedbackContentWrapper.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Generating feedback...</div>';
           try {
             segment.feedback = await generateSegmentFeedback(segment, segmentIdx);
-            // Save to Firestore - ensure feedback is persisted
             state.audioSegments[segmentIdx].feedback = segment.feedback;
             scheduleSave();
           } catch (error) {
@@ -2794,240 +2882,6 @@ Keep the feedback specific, constructive, and encouraging. Focus on question for
   }
 
   /**
-   * Gets personality-specific evaluation criteria and weights
-   * Returns an object with technique detection functions and scoring weights
-   */
-  function getPersonalityScoringCriteria(personalityIndex) {
-    const personalities = [
-      // Index 0: Long-winded, off-topic
-      {
-        techniques: {
-          context_focusing: (q, prevA) => {
-            // Questions that provide context or narrow scope
-            const qLower = q.toLowerCase();
-            return /\b(when you|in your|during|at the time|when|in the context of|specifically|in terms of|regarding|about the)\b/.test(qLower) ? 1.0 : 0.0;
-          },
-          time_anchoring: (q, prevA) => {
-            // Questions that anchor to specific times or events
-            const qLower = q.toLowerCase();
-            return /\b(when|time|date|year|day|moment|during|after|before|then|at that|at the|in|on)\s+(the|this|that|a specific|a particular)\b/.test(qLower) ? 1.0 : 0.5;
-          },
-          redirection_control: (q, prevA) => {
-            // Questions that gently redirect back to topic
-            return /\b(but|however|going back|to focus|specifically about|regarding|on the topic of|about)\b/.test(q.toLowerCase()) ? 1.0 : 0.5;
-          }
-        },
-        weights: {
-          context_focusing: 0.35,
-          time_anchoring: 0.35,
-          redirection_control: 0.20,
-          base_quality: 0.10 // tone_safe, ethics_safe, etc.
-        }
-      },
-      // Index 1: Skeptical, don't let go of info
-      {
-        techniques: {
-          transparency_framing: (q, prevA) => {
-            // Questions that explain why you're asking (transparency)
-            const qLower = q.toLowerCase();
-            return /\b(I'm asking|I want to understand|to clarify|I'm curious|help me understand|I'd like to know|just to understand)\b/.test(qLower) ? 1.0 : 0.0;
-          },
-          low_stakes_entry: (q, prevA) => {
-            // Simple, low-pressure opening questions
-            const qLower = q.toLowerCase();
-            const hasEasyStarters = /\b(can you|could you|tell me|what|how|when|where)\b/.test(qLower);
-            const avoidsPressure = !/\b(why did you|explain|describe in detail|confess|admit)\b/.test(qLower);
-            return (hasEasyStarters && avoidsPressure) ? 1.0 : 0.5;
-          },
-          building_rapport: (q, prevA) => {
-            // Questions that build on previous answers to show listening
-            if (!prevA) return 0.5;
-            const prevWords = prevA.toLowerCase().split(/\s+/).filter(w => w.length >= 3);
-            const qWords = q.toLowerCase().split(/\s+/);
-            const overlap = prevWords.filter(w => qWords.some(qw => qw.includes(w) || w.includes(qw))).length;
-            return Math.min(1.0, overlap / Math.max(1, Math.min(prevWords.length, 5)));
-          }
-        },
-        weights: {
-          transparency_framing: 0.35,
-          low_stakes_entry: 0.30,
-          building_rapport: 0.25,
-          base_quality: 0.10
-        }
-      },
-      // Index 2: Avoiding questions, redirecting
-      {
-        techniques: {
-          question_recognition: (q, prevA) => {
-            // Questions that acknowledge and gently refocus
-            const qLower = q.toLowerCase();
-            return /\b(but|however|going back|to answer|to respond|specifically|about|regarding|on)\b/.test(qLower) ? 1.0 : 0.5;
-          },
-          persistent_followup: (q, prevA) => {
-            // Follow-up questions that reference what was asked before
-            if (!prevA) return 0.5;
-            const prevWords = prevA.toLowerCase().split(/\s+/).filter(w => w.length >= 4);
-            const qWords = q.toLowerCase().split(/\s+/);
-            const overlap = prevWords.filter(w => qWords.some(qw => qw.includes(w) || w.includes(qw))).length;
-            return Math.min(1.0, (overlap + 1) / Math.max(2, Math.min(prevWords.length, 6)));
-          },
-          clear_framing: (q, prevA) => {
-            // Questions that are clearly structured and direct
-            const qLower = q.toLowerCase();
-            const hasQuestionWord = /\b(what|how|why|when|where|who|which)\b/.test(qLower);
-            const isDirect = qLower.length < 80; // Reasonable length
-            return (hasQuestionWord && isDirect) ? 1.0 : 0.5;
-          }
-        },
-        weights: {
-          question_recognition: 0.30,
-          persistent_followup: 0.35,
-          clear_framing: 0.25,
-          base_quality: 0.10
-        }
-      },
-      // Index 3: Getting defensive on hard questions
-      {
-        techniques: {
-          softening_language: (q, prevA) => {
-            // Questions that use soft, non-accusatory language
-            const qLower = q.toLowerCase();
-            const hasSofteners = /\b(can you help me understand|I'm curious|I wonder|if you're comfortable|if possible|would you mind)\b/.test(qLower);
-            const avoidsHard = !/\b(why did you|explain why|justify|defend|prove|accuse)\b/.test(qLower);
-            return (hasSofteners || avoidsHard) ? 1.0 : 0.3;
-          },
-          contextual_framing: (q, prevA) => {
-            // Questions that provide context before asking tough questions
-            const qLower = q.toLowerCase();
-            return /\b(I understand|I know|I realize|recognizing|acknowledging|given that|understanding|aware that)\b/.test(qLower) ? 1.0 : 0.5;
-          },
-          permission_seeking: (q, prevA) => {
-            // Questions that ask permission or check comfort
-            const qLower = q.toLowerCase();
-            return /\b(if you're comfortable|if you don't mind|if it's okay|if possible|would you be willing|can we|is it alright)\b/.test(qLower) ? 1.0 : 0.0;
-          }
-        },
-        weights: {
-          softening_language: 0.40,
-          contextual_framing: 0.30,
-          permission_seeking: 0.20,
-          base_quality: 0.10
-        }
-      },
-      // Index 4: Giving vague answers
-      {
-        techniques: {
-          specificity_prompts: (q, prevA) => {
-            // Questions that ask for specific details, examples, or concrete information
-            const qLower = q.toLowerCase();
-            const hasSpecificPrompts = /\b(specific|exactly|precisely|concrete|for example|give me an example|can you describe|tell me about|what happened|how did)\b/.test(qLower);
-            const asksForDetails = /\b(who|what|when|where|how many|how much|which|name|date|time)\b/.test(qLower);
-            return (hasSpecificPrompts || asksForDetails) ? 1.0 : 0.3;
-          },
-          example_seeking: (q, prevA) => {
-            // Questions that ask for examples or concrete instances
-            const qLower = q.toLowerCase();
-            return /\b(for example|can you give an example|instance|specific case|like when|such as|describe|tell me about a time)\b/.test(qLower) ? 1.0 : 0.0;
-          },
-          probing_for_details: (q, prevA) => {
-            // Follow-up questions that dig deeper into vague answers
-            if (!prevA) return 0.5;
-            const qLower = q.toLowerCase();
-            const isProbing = /\b(can you|tell me more|what do you mean|how so|in what way|specifically|elaborate|expand|go deeper)\b/.test(qLower);
-            return isProbing ? 1.0 : 0.5;
-          }
-        },
-        weights: {
-          specificity_prompts: 0.40,
-          example_seeking: 0.30,
-          probing_for_details: 0.20,
-          base_quality: 0.10
-        }
-      },
-      // Index 5: Controlled messaging, rehearsed
-      {
-        techniques: {
-          breaking_patterns: (q, prevA) => {
-            // Questions that don't follow expected patterns or scripted responses
-            const qLower = q.toLowerCase();
-            const isUnexpected = /\b(actually|but|however|what about|what if|but what about|on the other hand|but then)\b/.test(qLower);
-            const asksNewAngle = /\b(from another angle|different perspective|another way|if we look at|considering|thinking about)\b/.test(qLower);
-            return (isUnexpected || asksNewAngle) ? 1.0 : 0.3;
-          },
-          process_questions: (q, prevA) => {
-            // Questions about process, decision-making, or internal states rather than outcomes
-            const qLower = q.toLowerCase();
-            return /\b(how did you decide|what was your process|how did you feel|what went through your mind|what were you thinking|decision-making|thought process)\b/.test(qLower) ? 1.0 : 0.0;
-          },
-          behind_the_scenes: (q, prevA) => {
-            // Questions that go beyond the public message
-            const qLower = q.toLowerCase();
-            return /\b(behind|behind the scenes|what people don't know|what's not often discussed|what's really|the reality|the truth|beyond|outside of)\b/.test(qLower) ? 1.0 : 0.0;
-          }
-        },
-        weights: {
-          breaking_patterns: 0.35,
-          process_questions: 0.35,
-          behind_the_scenes: 0.20,
-          base_quality: 0.10
-        }
-      }
-    ];
-    
-    return personalities[personalityIndex] || personalities[2]; // Default to index 2 if invalid
-  }
-
-  /**
-   * Scores heuristic features of a question (0-1 for each feature)
-   * Now includes personality-specific technique detection
-   */
-  function scoreQuestionHeuristics(question, previousAnswer = '', personalityIndex = 2) {
-    const q = question.toLowerCase().trim();
-    const prevA = (previousAnswer || '').toLowerCase();
-    
-    // Get personality-specific criteria
-    const criteria = getPersonalityScoringCriteria(personalityIndex);
-    
-    // Score personality-specific techniques
-    const techniqueScores = {};
-    for (const [techniqueName, techniqueFunc] of Object.entries(criteria.techniques)) {
-      techniqueScores[techniqueName] = techniqueFunc(q, prevA);
-    }
-    
-    // Base quality features (used by all personalities)
-    // is_double_barreled: contains two questions (has multiple "?" or "and" + question pattern)
-    const questionMarks = (q.match(/\?/g) || []).length;
-    const hasAndQuestion = /\b(and|also|additionally|plus)\s+[^?.]*\?/.test(q);
-    const is_double_barreled = (questionMarks > 1 || hasAndQuestion) ? 0.0 : 1.0;
-    
-    // is_leading: check for common leading phrases
-    const is_leading = (
-      /\b(don't you think|isn't it true|so you admit|wouldn't you agree|you must|you have to|obviously|clearly)\b/.test(q)
-    ) ? 0.0 : 1.0;
-    
-    // tone_safe: check for obviously rude/insulting language
-    const tone_safe = (
-      /\b(stupid|idiot|dumb|ridiculous|absurd|terrible|awful|hate|disgusting)\b/.test(q)
-    ) ? 0.0 : 1.0;
-    
-    // ethics_safe: check for obvious privacy violations
-    const hasPrivateProbing = /\b(ssn|social security|credit card|bank account|password|address|phone number)\b/.test(q);
-    const ethics_safe = hasPrivateProbing ? 0.0 : 1.0;
-    
-    // Base quality score (average of fundamental qualities)
-    const baseQuality = (is_double_barreled + is_leading + tone_safe + ethics_safe) / 4;
-    
-    return {
-      ...techniqueScores,
-      base_quality: baseQuality,
-      is_double_barreled,
-      is_leading,
-      tone_safe,
-      ethics_safe
-    };
-  }
-
-  /**
    * Uses lightweight LLM to re-score specific features that scored poorly in heuristics
    * Only scores the features that need verification (those with low heuristic scores)
    * Returns scores for requested features (0-1 each)
@@ -3084,23 +2938,6 @@ Respond with ONLY the JSON object, no other text.`;
     
     // If LLM fails, return empty object (will use heuristic scores)
     return {};
-  }
-
-  /**
-   * Checks if question contains repair moves (e.g., "let me rephrase", "I may have assumed")
-   */
-  function detectRepairMove(question) {
-    const q = question.toLowerCase();
-    const repairPhrases = [
-      'let me rephrase',
-      'let me try again',
-      'i may have assumed',
-      'can you correct me',
-      'i may have misunderstood',
-      'sorry, what i meant',
-      'actually, let me ask'
-    ];
-    return repairPhrases.some(phrase => q.includes(phrase));
   }
 
   /**
@@ -6939,7 +6776,7 @@ ${transcriptContent}`;
     state.isCompleted = true;
     saveTranscript();
     await saveStateToFirestore();
-    // Navigate to reflection page after marking as done
+    // Navigate to completed interview transcript page
     window.location.href = `interview-reflection.html?interviewId=${encodeURIComponent(interviewId)}`;
   }
 

@@ -1,8 +1,13 @@
-const express = require('express');
-const path = require('path');
-const axios = require('axios');
-require('dotenv').config();
-const cors = require('cors');
+import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import axios from 'axios';
+import dotenv from 'dotenv';
+import cors from 'cors';
+
+dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 
@@ -143,4 +148,4 @@ app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
 
-module.exports = app;
+export default app;
