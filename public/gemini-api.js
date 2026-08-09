@@ -12,7 +12,7 @@ async function getGoogleApiKey() {
     }
 }
 
-export async function callGemini(prompt) {
+export async function callGemini(prompt, options = {}) {
     try {
         const response = await fetch('/gemini/generateContent', {
             method: 'POST',
@@ -26,10 +26,10 @@ export async function callGemini(prompt) {
                     }]
                 }],
                 generationConfig: {
-                    temperature: 0.5,
+                    temperature: options.temperature ?? 0.5,
                     topK: 40,
                     topP: 0.95,
-                    maxOutputTokens: 2048
+                    maxOutputTokens: 8192
                 }
             })
         });

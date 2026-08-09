@@ -598,6 +598,60 @@ body {
     margin: 10px;
 }
 
+.trust-meter {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    margin: 0 12px;
+}
+
+.trust-meter-label {
+    font-size: 11px;
+    color: #555;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    font-family: 'Open Sans', sans-serif;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+}
+
+.trust-meter-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.trust-meter-avatar {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+}
+
+.trust-meter-track {
+    width: 100px;
+    height: 9px;
+    background: #e0e0e0;
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.trust-meter-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 5px;
+    background: linear-gradient(to right, #e05252, #f0a500, #4caf50);
+    transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.followup-hint {
+    cursor: help;
+    font-size: 14px;
+    margin-left: 6px;
+    opacity: 0.85;
+}
+
 .done-interview-button {
     background-color: #007bff;
     color: white;
@@ -1592,3 +1646,22 @@ body {
 .reflection-done-button {
     margin-top: 12px;
 }
+
+/* Module tag pills shown inside per-question feedback items */
+.module-tag {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 10px;
+    margin-right: 6px;
+    vertical-align: middle;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+}
+.module-tag-question-quality     { background: #e3f2fd; color: #1565c0; }
+.module-tag-cognitive-engagement { background: #f3e5f5; color: #6a1b9a; }
+.module-tag-power-dynamics       { background: #fff3e0; color: #e65100; }
+.module-tag-ethics-privacy       { background: #e8f5e9; color: #2e7d32; }
+.module-tag-cultural-knowledge   { background: #fce4ec; color: #880e4f; }

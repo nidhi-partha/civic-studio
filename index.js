@@ -143,6 +143,10 @@ app.get('/google-api-key', (req, res) => {
   res.json({ apiKey: process.env.GOOGLE_API_KEY });
 });
 
+app.get('/google-tts-api-key', (req, res) => {
+  res.json({ apiKey: process.env.GOOGLE_TTS_API_KEY });
+});
+
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);

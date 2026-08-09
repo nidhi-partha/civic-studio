@@ -2,7 +2,6 @@
  * This is the javascript for reading-page.js
  */
 
-import { callClaude } from './claude-api.js';
 import { callGemini } from './gemini-api.js';
 import {
   auth, signOut, db, storage,
@@ -10,8 +9,7 @@ import {
   doc, getDoc, setDoc, updateDoc, serverTimestamp,
   ref, uploadBytes, getDownloadURL, getBytes, deleteObject
 } from './firebase-init.js';
-import { callOpenAI } from './openai-api.js';
-import { PERSONALITIES, IMAGES, MODULES } from './reading-page-constants.js';
+import { PERSONALITIES, PERSONALITY_DETAILS, IMAGES, MODULES } from './reading-page-constants.js';
 import { id, qs, qsa, cacheElements } from './reading-page-dom-utils.js';
 import { showLoadingOverlay, updateLoadingText, hideLoadingOverlay, createButton, createIcon } from './reading-page-ui-utils.js';
 import { getPersonalityScoringCriteria, scoreQuestionHeuristics, detectRepairMove } from './reading-page-scoring.js';
@@ -146,9 +144,12 @@ import { getPersonalityScoringCriteria, scoreQuestionHeuristics, detectRepairMov
     if (elements.brainstormTextarea) elements.brainstormTextarea.classList.remove('expanded');
     if (elements.doneButton) elements.doneButton.style.display = 'none';
     if (elements.interviewContent) elements.interviewContent.style.display = 'block';
-    
+
     // Hide mic button in interview mode (only show in brainstorm/reflect mode)
     if (elements.micButton) elements.micButton.style.display = 'none';
+
+    // Show the trust meter in interview mode
+    updateTrustMeter(state.trustHistory || 0.1);
     // Keep resources/tips visible at all times
     const questionTipsIcon = id('questionTipsIcon');
     const questionTipsButton = id('questionTipsButton');
@@ -297,6 +298,7 @@ import { getPersonalityScoringCriteria, scoreQuestionHeuristics, detectRepairMov
       // Restore your state fields (only the ones you care about right now)
       state.inBrainstormMode = !!s.inBrainstormMode;
       state.inReflectionMode = !!s.inReflectionMode;
+      state.trustHistory = typeof s.trustHistory === 'number' ? s.trustHistory : 0.1;
       state.fullTranscript = Array.isArray(s.fullTranscript) ? s.fullTranscript : [];
       state.brainstormTranscript = Array.isArray(s.brainstormTranscript) ? s.brainstormTranscript : [];
       state.reflectionTranscript = Array.isArray(s.reflectionTranscript) ? s.reflectionTranscript : [];
@@ -427,6 +429,7 @@ import { getPersonalityScoringCriteria, scoreQuestionHeuristics, detectRepairMov
       readingPageState: {
         inBrainstormMode: !!state.inBrainstormMode,
         inReflectionMode: !!state.inReflectionMode,
+        trustHistory: state.trustHistory || 0.1,
         brainstormTextarea: elements.brainstormTextarea ? elements.brainstormTextarea.value : '',
         fullTranscript: state.fullTranscript || [],
         brainstormTranscript: state.brainstormTranscript || [],
@@ -1298,7 +1301,7 @@ ${noQuestionsInstruction}`;
   /**
    * Creates a Q&A block for a question
    */
-  function createQAblock(question, container) {
+  function createQAblock(question, container, followupCount = 0) {
     const qaBlock = document.createElement('div');
     qaBlock.classList.add('qa-block');
     // track transcript index and mode for in-place updates
@@ -1353,7 +1356,7 @@ ${noQuestionsInstruction}`;
     container.appendChild(notesDiv);
     container.appendChild(additionalQuestionsDiv);
 
-    setupQABlockListeners(iconContainer, notesDiv, additionalQuestionsDiv, answerElement, questionElement, qaBlock);
+    setupQABlockListeners(iconContainer, notesDiv, additionalQuestionsDiv, answerElement, questionElement, qaBlock, followupCount);
 
     return { qaBlock, questionElement, answerElement };
   }
@@ -1393,14 +1396,14 @@ ${noQuestionsInstruction}`;
   /**
    * Sets up event listeners for Q&A block controls
    */
-  function setupQABlockListeners(iconContainer, notesDiv, additionalQuestionsDiv, answerElement, questionElement, qaBlock) {
+  function setupQABlockListeners(iconContainer, notesDiv, additionalQuestionsDiv, answerElement, questionElement, qaBlock, followupCount = 0) {
     const followUpButton = iconContainer.querySelector('.follow-up-button');
     const commentButton = iconContainer.querySelector('img[alt="Add Comment"]');
     const pauseBut = iconContainer.querySelector('img[alt="Pause"]');
     const redoButton = iconContainer.querySelector('img[alt="Redo"]');
     const trashButton = iconContainer.querySelector('img[alt="Delete"]');
 
-    followUpButton.addEventListener('click', () => handleFollowUp(iconContainer, additionalQuestionsDiv, followUpButton));
+    followUpButton.addEventListener('click', () => handleFollowUp(iconContainer, additionalQuestionsDiv, followUpButton, followupCount));
     commentButton.addEventListener('click', () => handleComment(iconContainer, notesDiv));
     pauseBut.addEventListener('click', () => handlePausePlay(pauseBut, { highlightEl: answerElement }));
     redoButton.addEventListener('click', () => handleRedo(qaBlock, answerElement, questionElement));
@@ -1408,25 +1411,68 @@ ${noQuestionsInstruction}`;
   }
 
   /**
-   * Handles follow-up question creation
+   * Handles follow-up question creation — immediately starts mic, no text input
    */
-  function handleFollowUp(iconContainer, additionalQuestionsDiv, followUpButton) {
-    const newQuestionInput = document.createElement('input');
-    newQuestionInput.setAttribute('placeholder', 'Type your question here...');
-    newQuestionInput.classList.add('new-question-input');
-    iconContainer.parentNode.insertBefore(newQuestionInput, iconContainer.nextSibling);
-
-    newQuestionInput.addEventListener('keypress', function (e) {
-      if (e.key === 'Enter') {
-        const newQuestion = newQuestionInput.value.trim();
-        if (newQuestion) {
-          createQAblock(newQuestion, additionalQuestionsDiv);
-          newQuestionInput.remove();
-        }
-      }
-    });
+  async function handleFollowUp(iconContainer, additionalQuestionsDiv, followUpButton, followupCount = 0) {
+    const thisFollowupCount = followupCount + 1;
     followUpButton.remove();
+
+    // Show hint after the 3rd consecutive follow-up on this thread
+    if (thisFollowupCount >= 3) {
+      showFollowUpHint(iconContainer);
+    }
+
+    // Show a "listening" placeholder while recording
+    const placeholder = document.createElement('div');
+    placeholder.className = 'qa-block';
+    placeholder.style.backgroundColor = '#edf2f7';
+    const placeholderQ = document.createElement('h4');
+    placeholderQ.className = 'unanswered-question';
+    placeholderQ.innerText = 'Q: 🎤 Listening...';
+    const placeholderA = document.createElement('p');
+    placeholderA.innerText = 'A:';
+    placeholder.appendChild(placeholderQ);
+    placeholder.appendChild(placeholderA);
+    additionalQuestionsDiv.appendChild(placeholder);
+
+    try {
+      const speechResult = await captureSpeech();
+      placeholder.remove();
+
+      if (speechResult && speechResult.transcript) {
+        const { qaBlock, answerElement, questionElement } = createQAblock(speechResult.transcript, additionalQuestionsDiv, thisFollowupCount);
+        // Freeze the click handler so re-clicks don't retrigger recording
+        qaBlock.dataset.frozen = 'true';
+        answerElement.innerText = 'thinking...';
+        await processResponse(speechResult.transcript, answerElement, questionElement, qaBlock, speechResult.audioBlob, speechResult.duration);
+        // Unfreeze so redo and normal interaction work
+        qaBlock.dataset.frozen = 'false';
+      }
+    } catch (error) {
+      placeholder.remove();
+      console.error('Follow-up recording failed:', error);
+    }
+
     scheduleSave();
+  }
+
+  function showFollowUpHint(iconContainer) {
+    if (iconContainer.querySelector('.followup-hint')) return;
+    const personalityIndex = state.personalityIndex !== undefined ? state.personalityIndex : 2;
+    const hints = [
+      'Try asking one very specific, short question instead of a broad one',
+      'Explain why you need this — "I\'m asking because my readers want to understand..."',
+      'Circle back: "Going back to what I asked earlier about X — can you address that specifically?"',
+      'Acknowledge their concern first: "I hear you, but I just need to clarify one thing..."',
+      'Ask for a concrete detail: a name, date, or number — "Can you give me one specific example?"',
+      'Reframe as a yes/no: "Can you just confirm yes or no — did X happen?"'
+    ];
+    const hint = hints[personalityIndex] || hints[2];
+    const hintEl = document.createElement('span');
+    hintEl.className = 'followup-hint';
+    hintEl.title = `Tip: ${hint}`;
+    hintEl.textContent = '💡';
+    iconContainer.appendChild(hintEl);
   }
 
   /**
@@ -1748,68 +1794,20 @@ ${noQuestionsInstruction}`;
       if (state.inReflectionMode || state.inBrainstormMode) {
         userQuestion = buildFeedbackPrompt(userQuery);
         voiceName = 'en-US-Neural2-J';
-        const response = await callClaude(userQuestion);
+        const response = await callGemini(userQuestion);
         var trimmedResponse = cleanResponse(response);
       } else {
-        // if in interview mode --> use two-part system: generate base response, then add personality
-        // Part 1: Generate base response
-        const basePrompt = buildBaseIntervieweePrompt(userQuery, intervieweeName, intervieweeInfo);
-        const baseResponse = await callClaude(basePrompt);
-        const cleanedBaseResponse = cleanResponse(baseResponse);
-        
-        // Calculate trust level based on transcript quality (pass current question for scoring)
+        // Interview mode: single prompt with personality baked in from the start
         const trustLevel = await calculateTrustLevel(state.fullTranscript, userQuery);
-        
-        // Check if user is showing increased specificity/effort (rephrasing, being more specific)
         const userShowingEffort = detectIncreasedSpecificity(userQuery, state.fullTranscript);
-        
-        // Part 2: Refactor with personality based on trust level
-        const refactorPrompt = buildPersonalityRefactorPrompt(
-          cleanedBaseResponse, 
-          personality, 
-          trustLevel, 
-          userQuery, 
-          intervieweeName,
-          userShowingEffort
-        );
-        let refactoredResponse = await callClaude(refactorPrompt);
-        var trimmedResponse = cleanResponse(refactoredResponse);
-        
-        // Check if the refactored response actually answers the question
-        const answerQuality = await checkAnswerQuality(userQuery, trimmedResponse);
-        
-        // If answer quality is poor (< 0.6) and user is showing effort, re-refactor with minimal personality
-        if (answerQuality < 0.6 && userShowingEffort) {
-          console.log('Answer quality low with user effort detected, re-refactoring with minimal personality');
-          const minimalPrompt = buildPersonalityRefactorPrompt(
-            cleanedBaseResponse,
-            personality,
-            0.9, // High trust = minimal personality
-            userQuery,
-            intervieweeName,
-            true // User showing effort
-          );
-          refactoredResponse = await callClaude(minimalPrompt);
-          trimmedResponse = cleanResponse(refactoredResponse);
-        } else if (answerQuality < 0.5) {
-          // Even without explicit effort, if answer is very poor, reduce personality
-          console.log('Answer quality very low, re-refactoring with reduced personality');
-          const reducedPrompt = buildPersonalityRefactorPrompt(
-            cleanedBaseResponse,
-            personality,
-            Math.min(0.8, trustLevel + 0.3), // Boost trust to reduce personality
-            userQuery,
-            intervieweeName,
-            false
-          );
-          refactoredResponse = await callClaude(reducedPrompt);
-          trimmedResponse = cleanResponse(refactoredResponse);
-        }
+        const interviewPrompt = buildIntervieweePrompt(userQuery, intervieweeName, trustLevel, personality, userShowingEffort);
+        const rawResponse = await callGemini(interviewPrompt);
+        var trimmedResponse = cleanResponse(rawResponse);
       }
 
       // Validate that we got a response
       if (!trimmedResponse || trimmedResponse.trim() === '') {
-        console.error('Empty response from AI:', response);
+        console.error('Empty response from AI');
         answerElement.innerText = "A: I'm sorry, I didn't receive a response. Please try asking your question again.";
         hideLoadingOverlay();
         return;
@@ -2340,55 +2338,50 @@ ${noQuestionsInstruction}`;
 10. End with Reflection: Finish with a thoughtful wrap-up question, like “Looking back, what lesson stands out most to you?” This helps the interview feel complete.`;
 
 
-      const prompt = `You are a feedback coach for a high school journalism student. Review the following interview question in the context of the entire interview so far.
+      const isFollowUp = segmentIndex > 0;
+      const cognitiveEngagementModule = isFollowUp
+        ? `- "Cognitive Engagement" — whether the question builds on the interviewee's previous answer, shows active listening, or digs deeper into what was just said`
+        : `(Cognitive Engagement does not apply here — this is the first question, so there is no prior answer to build on.)`;
+
+      const prompt = `You are a feedback coach for a high school journalism student. Review the following interview question in the context of the interview so far.
 
 PRIOR INTERVIEW CONTEXT (earlier Q/A pairs only — not the segment under review):
 ${priorInterviewContext || '(None — this is the first question in the interview.)'}
 
-CURRENT SEGMENT TO EVALUATE (the question text below appears only here; give feedback only on this question):
+CURRENT SEGMENT TO EVALUATE (give feedback only on this question):
 ${currentSegmentContext}
 
-Provide concise, structured feedback focusing ONLY on the quality of this specific question. Keep each section brief (1-2 sentences max). Format your response as follows:
+Evaluate the quality of this specific question. Identify up to 2 strengths and up to 2 areas for growth. For each item, tag it with the SINGLE most relevant journalism competency from this list:
 
-**Strengths:**
-[One brief sentence about what makes this question effective]
+- "Question Quality" — clarity, specificity, open-endedness, logical structure, whether it invites a rich answer
+${cognitiveEngagementModule}
+- "Power Dynamics" — whether the question gives the interviewee enough space to speak fully, or whether it is leading/restrictive
+- "Ethics and Privacy" — consent, handling of sensitive topics, respectful boundaries
+- "Cultural Knowledge" — cultural awareness, avoiding assumptions, contextual sensitivity
 
-**Weaknesses:**
-[One brief sentence about what could be improved. DO NOT GIVE FEEDBACK ON GRAMMAR. THIS TRANSCRIPT QUESTION IS GENERATED THROUGH SPEECH TO TEXT AND MAY NOT REFLECT THE STUDENT'S ACTUAL QUESTION GRAMMAR. Give feedback on the intended question's content, quality, and appropriateness for interviewee.]
+Respond with ONLY a valid JSON object (no markdown, no extra text):
+{
+  "strengths": [
+    { "module": "Question Quality", "text": "One sentence about what makes this effective." }
+  ],
+  "areas_for_growth": [
+    { "module": "Power Dynamics", "text": "One sentence about what could be improved." }
+  ],
+  "suggestion": "One brief, actionable suggestion with a quick example of how to apply it.",
+  "metacognitive_question": "How would you write a question that...",
+  "metacognitive_example": "e.g., I might ask something like [sample question here]"
+}
 
-**Scaffolded Suggestions:**
-[One brief, actionable suggestion with a quick example]
-
-**Metacognitive Question:**
-[Generate one clear, simple question that guides the student to practice writing an improved question based on the scaffolded suggestion. The question should:
-- Use simple, easy-to-understand language appropriate for high school students
-- Directly reference the specific improvement mentioned in the scaffolded suggestion
-- Give clear cues about what the student should do (e.g., "write a question that...", "create a question that...", "formulate a question that...")
-- Be actionable and specific enough that the student knows exactly what to do
-- Start with phrases like "How would you write...", "What question would you ask that...", or "Can you create a question that..."
-
-After the question, provide an example answer on a new line starting with "Example answer:". The example should be a simple, direct sentence that shows a sample question. Start with "e.g., I might ask something like" followed by the sample question. Keep it brief and focused - no bullets, no rationale, just the example.
-
-Format:
-[The metacognitive question]
-
-Example answer: e.g., I might ask something like [sample question here]
-
-Examples:
-- Question: "How would you write a question that's more targeted and gets straight to the point?"
-  Example answer: e.g., I might ask something like "What specific moment made you decide to pursue this career?"
-- Question: "What question would you ask that gives the interviewee more room to share their story?"
-  Example answer: e.g., I might ask something like "Can you walk me through a time when you faced a significant challenge in your work?"
-
-Here are some tips for writing good questions. Use this to evaluate the question's content, quality, and appropriateness for interviewee:
-${questionTips}
-
-Keep the question simple, direct, and easy to understand.]
-
-Keep the feedback specific, constructive, and encouraging. Focus on question formulation, clarity, depth, and appropriateness for journalism interviewing.`;
+Rules:
+- Prefer exactly 1 item in "strengths" and 1 in "areas_for_growth". Only include a second if there is a genuinely distinct and important point that would be meaningfully lost by omitting it
+- Only tag a module if it genuinely applies to this specific question — do not force all 5
+- Keep each "text" field to 1–2 sentences
+- DO NOT critique grammar or phrasing mechanics — this transcript was generated by speech-to-text
+- Return ONLY valid JSON`;
       
-      const feedback = await callClaude(prompt);
-      return feedback.trim();
+      const raw = await callGemini(prompt);
+      // Strip markdown code fences Gemini sometimes wraps around JSON
+      return raw.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
     } catch (error) {
       console.error('Error generating segment feedback:', error);
       return 'Feedback generation failed. Please try again.';
@@ -2913,7 +2906,7 @@ Previous answer (for context): "${previousAnswer.substring(0, 200)}"
 
 Respond with ONLY the JSON object, no other text.`;
 
-      const response = await callClaude(prompt);
+      const response = await callGemini(prompt);
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const scores = JSON.parse(jsonMatch[0]);
@@ -2986,7 +2979,7 @@ Answer: "${answer}"
 
 Respond with ONLY the JSON object, no other text.`;
 
-      const response = await callClaude(prompt);
+      const response = await callGemini(prompt);
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const result = JSON.parse(jsonMatch[0]);
@@ -3001,63 +2994,151 @@ Respond with ONLY the JSON object, no other text.`;
   }
 
   /**
-   * Scores a single question turn (0-1) based on interaction quality
-   * Uses personality-specific evaluation criteria and weights
-   * Uses heuristics first, then LLM only for base features that scored poorly
+   * Scores a single question turn (0-1) using an LLM judge with personality-specific rubrics.
+   * Falls back to heuristics if the LLM call fails.
+   * Also stores state.lastSkillScore (personality-specific score 0-1) for use in response prompts.
    */
   async function scoreQuestionTurn(question, previousAnswer = '', personalityIndex = 2) {
-    // Get personality-specific criteria and weights
-    const criteria = getPersonalityScoringCriteria(personalityIndex);
-    
-    // Get heuristic scores (including personality-specific techniques)
-    const heuristics = scoreQuestionHeuristics(question, previousAnswer, personalityIndex);
-    
-    // Threshold for re-checking with LLM (if heuristic score is below this, verify with LLM)
-    const LLM_THRESHOLD = 0.8;
-    
-    // Determine which base features need LLM verification
-    const featuresToCheck = [];
-    if (heuristics.is_leading < LLM_THRESHOLD) {
-      featuresToCheck.push('is_leading');
-    }
-    if (heuristics.tone_safe < LLM_THRESHOLD) {
-      featuresToCheck.push('tone_safe');
-    }
-    if (heuristics.ethics_safe < LLM_THRESHOLD) {
-      featuresToCheck.push('ethics_safe');
-    }
-    
-    // Get LLM scores only for base features that need verification
-    let llmScores = {};
-    if (featuresToCheck.length > 0) {
-      llmScores = await scoreQuestionWithLLM(question, previousAnswer, featuresToCheck);
-    }
-    
-    // Use LLM scores if available, otherwise use heuristic scores for base features
-    const is_leading = llmScores.hasOwnProperty('is_leading') ? llmScores.is_leading : heuristics.is_leading;
-    const tone_safe = llmScores.hasOwnProperty('tone_safe') ? llmScores.tone_safe : heuristics.tone_safe;
-    const ethics_safe = llmScores.hasOwnProperty('ethics_safe') ? llmScores.ethics_safe : heuristics.ethics_safe;
-    
-    // Update base_quality with refined base feature scores
-    const refinedBaseQuality = (heuristics.is_double_barreled + is_leading + tone_safe + ethics_safe) / 4;
-    
-    // Check for repair moves
-    const hasRepair = detectRepairMove(question);
-    
-    // Combine scores using personality-specific weights
-    let score = refinedBaseQuality * (criteria.weights.base_quality || 0.1);
-    
-    // Add personality-specific technique scores with their weights
-    for (const [techniqueName, weight] of Object.entries(criteria.weights)) {
-      if (techniqueName !== 'base_quality' && heuristics.hasOwnProperty(techniqueName)) {
-        score += heuristics[techniqueName] * weight;
+    const isFirstQuestion = !previousAnswer || previousAnswer.trim() === '';
+
+    const personalityRubrics = [
+      // P0: Long-winded, off-topic
+      {
+        description: 'This interviewee gives lengthy, wandering answers that go off-topic.',
+        skill: 'Focusing — ask ONE specific question; use topic anchors; avoid broad invitations to ramble.',
+        E: 'Asks ONE specific thing rather than a broad open invitation ("Tell me about yourself" is broad; "What is your current job title?" is specific)',
+        F: 'Does NOT use ramble-inviting phrases like "tell me more", "go on", "keep going", "what happened next", "and then"',
+        G: 'Anchors to something concrete — a specific time, place, topic, or fact — rather than asking open-endedly',
+      },
+      // P1: Skeptical, withholds info
+      {
+        description: 'This interviewee is guarded and suspicious of journalists. They share little and clam up when pressed.',
+        skill: 'Rapport-building — use gentle, low-stakes entry; avoid accusatory or pressuring language.',
+        E: 'Uses a gentle, non-threatening framing (can you, tell me, what, how) rather than demanding language (explain why, you must, why did you)',
+        F: 'Does NOT use accusatory or confrontational language',
+        G: 'References or acknowledges something the interviewee said to show listening and build rapport',
+      },
+      // P2: Avoids/redirects
+      {
+        description: 'This interviewee pivots away from uncomfortable questions and redirects to safe ground.',
+        skill: 'Persistence — explicitly circle back to what was not answered; name the dodge; do not follow the redirect.',
+        E: isFirstQuestion
+          ? 'First question — bridging back does not apply yet (auto-score: 1)'
+          : 'Explicitly bridges back to an unanswered question (e.g., "going back to...", "you didn\'t answer...", "my question was about...")',
+        F: isFirstQuestion
+          ? 'First question — following redirect does not apply yet (auto-score: 1)'
+          : 'Does NOT simply follow the redirect or change topics without pressing back',
+        G: 'Question is clear and direct, with a specific question word (what/how/why/when/where)',
+      },
+      // P3: Gets defensive
+      {
+        description: 'This interviewee becomes defensive and shuts down when they feel accused or criticized.',
+        skill: 'Softening — acknowledge their perspective first; use "I wonder if..." framing; avoid blame.',
+        E: 'Uses softening or empathetic language ("I\'m curious", "help me understand", "I wonder", "I understand that")',
+        F: 'Avoids blame framing ("you caused", "your fault", "how could you", "you have to admit", "you\'re responsible")',
+        G: 'Acknowledges the interviewee\'s perspective or situational context before asking',
+      },
+      // P4: Vague answers
+      {
+        description: 'This interviewee gives vague, general answers that avoid specifics.',
+        skill: 'Pressing for specifics — demand names, dates, numbers, examples; avoid questions they can answer vaguely.',
+        E: 'Asks for at least one specific (a name, number, date, place, or concrete example)',
+        F: 'Is open-ended enough that a vague answer would obviously be insufficient (not a simple yes/no)',
+        G: 'Does NOT use vague/broad language as the main focus ("things", "stuff", "generally", "overall", "kind of")',
+      },
+      // P5: On-message/rehearsed
+      {
+        description: 'This interviewee gives polished, rehearsed talking-point answers.',
+        skill: 'Breaking patterns — ask about process, behind-the-scenes, feelings, or unexpected angles; avoid handing them talking points.',
+        E: 'Goes beyond the prepared message — asks about process, decision-making, feelings, or backstory rather than outcomes/results',
+        F: 'Does NOT hand them a talking point ("what do you want people to know", "tell us about your mission", open-mic questions)',
+        G: 'Asks something requiring genuine thought rather than recitation of a prepared line',
+      },
+    ];
+
+    const rubric = personalityRubrics[personalityIndex] || personalityRubrics[2];
+    const priorContext = isFirstQuestion
+      ? 'This is the first question — there is no prior answer.'
+      : `Prior answer: "${previousAnswer.substring(0, 300)}"`;
+
+    const firstQNote = isFirstQuestion
+      ? '\nFirst-question exception: Do NOT penalize for lack of follow-up bridging or callback — those only apply to follow-up questions.'
+      : '';
+
+    const prompt = `You are scoring a high school journalism student's interview question from 0.0 to 1.0.
+
+INTERVIEWEE TYPE: ${rubric.description}
+KEY SKILL BEING PRACTICED: ${rubric.skill}
+
+${priorContext}
+STUDENT'S QUESTION: "${question}"
+
+Score each criterion as 0 (no), 0.5 (partial), or 1 (yes):
+
+UNIVERSAL JOURNALISM SKILLS (30% of score):
+A. Open-ended — not a simple yes/no question [0/0.5/1]
+B. Focused — addresses ONE clear question, not a shotgun of 3+ sub-questions [0/0.5/1]
+C. Non-leading — no loaded assumptions, presuppositions, or "don't you think" framing [0/1]
+D. Respectful — no hostility, gotcha framing, or insults [0/1]
+
+PERSONALITY-SPECIFIC SKILL (70% of score):
+E. ${rubric.E} [0/0.5/1]
+F. ${rubric.F} [0/1]
+G. ${rubric.G} [0/0.5/1]
+${firstQNote}
+Important: This is speech-to-text — do not penalize grammar or sentence structure.
+
+Respond with ONLY this JSON, no other text:
+{"A":1,"B":1,"C":1,"D":1,"E":1,"F":1,"G":1,"reasoning":"one sentence"}`;
+
+    try {
+      const raw = await callGemini(prompt, { temperature: 0.1 });
+      const jsonStr = raw.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+      const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('No JSON in response');
+      const scores = JSON.parse(jsonMatch[0]);
+
+      const A = Math.max(0, Math.min(1, scores.A ?? 1));
+      const B = Math.max(0, Math.min(1, scores.B ?? 1));
+      const C = Math.max(0, Math.min(1, scores.C ?? 1));
+      const D = Math.max(0, Math.min(1, scores.D ?? 1));
+      // For P2 first question, E and F auto-score 1
+      const E = (personalityIndex === 2 && isFirstQuestion) ? 1 : Math.max(0, Math.min(1, scores.E ?? 0.5));
+      const F = (personalityIndex === 2 && isFirstQuestion) ? 1 : Math.max(0, Math.min(1, scores.F ?? 0.5));
+      const G = Math.max(0, Math.min(1, scores.G ?? 0.5));
+
+      const universalScore = (A + B + C + D) / 4;
+      const personalityScore = (E + F + G) / 3;
+      const finalScore = Math.max(0.1, Math.min(0.9, universalScore * 0.30 + personalityScore * 0.70));
+
+      // Store personality-specific score so interviewee prompt can decide whether to include usable info
+      state.lastSkillScore = personalityScore;
+
+      console.log(
+        `[Score] LLM judge P${personalityIndex}: A=${A} B=${B} C=${C} D=${D} E=${E} F=${F} G=${G}\n` +
+        `  universal=${universalScore.toFixed(2)} × 0.30 + personality=${personalityScore.toFixed(2)} × 0.70\n` +
+        `  reasoning: ${scores.reasoning || '—'}\n` +
+        `  → final score: ${finalScore.toFixed(3)}`
+      );
+
+      return finalScore;
+    } catch (err) {
+      console.warn('[Score] ⚠️ LLM judge failed, using heuristic fallback:', err.message);
+      // Fallback: heuristic scoring
+      const criteria = getPersonalityScoringCriteria(personalityIndex);
+      const heuristics = scoreQuestionHeuristics(question, previousAnswer, personalityIndex);
+      const hasRepair = detectRepairMove(question);
+      const refinedBaseQuality = (heuristics.is_double_barreled + heuristics.is_leading + heuristics.tone_safe + heuristics.ethics_safe) / 4;
+      let score = refinedBaseQuality * (criteria.weights.base_quality || 0.1);
+      for (const [techniqueName, weight] of Object.entries(criteria.weights)) {
+        if (techniqueName !== 'base_quality' && heuristics.hasOwnProperty(techniqueName)) {
+          score += heuristics[techniqueName] * weight;
+        }
       }
+      const fallbackScore = Math.min(1.0, score + (hasRepair ? 0.1 : 0));
+      state.lastSkillScore = fallbackScore;
+      return fallbackScore;
     }
-    
-    // Add repair boost (0.1 bonus, capped at 1.0)
-    const finalScore = Math.min(1.0, score + (hasRepair ? 0.1 : 0));
-    
-    return finalScore;
   }
 
   /**
@@ -3065,6 +3146,79 @@ Respond with ONLY the JSON object, no other text.`;
    * Returns a value between 0.1 (low trust) and 0.9 (high trust)
    * Now uses personality-specific evaluation criteria
    */
+  function detectBadQuestion(question, prevAnswer, personalityIndex) {
+    const q = question.toLowerCase().trim();
+    const words = q.split(/\s+/);
+    const wordCount = words.length;
+
+    if (wordCount <= 4 && !/\b(what|who|why|when|how|where|which)\b/.test(q)) {
+      return { bad: true, reason: 'too short — not a real question' };
+    }
+
+    switch (personalityIndex) {
+      case 0: {
+        if (/\b(tell me more|go on|continue|keep going|and then what|what happened next)\b/.test(q)) {
+          return { bad: true, reason: 'encouraging more rambling instead of redirecting' };
+        }
+        if (/^(that's (interesting|fascinating|amazing|great|incredible)|wow|oh wow|really|interesting|amazing)\b/.test(q) && wordCount < 12) {
+          return { bad: true, reason: 'passive acceptance — not redirecting to the actual question' };
+        }
+        break;
+      }
+      case 1: {
+        if (/\b(why are you (being|hiding|withholding|lying|so secretive)|you must (know|have)|admit it|you('re| are) hiding|you('re| are) lying|stop (hiding|avoiding|evading))\b/.test(q)) {
+          return { bad: true, reason: 'hostile\/accusatory — confirms their distrust of journalists' };
+        }
+        if (/\b(why are you (so guarded|being so|uncomfortable|reluctant)|you seem (reluctant|uncomfortable|nervous|guarded))\b/.test(q)) {
+          return { bad: true, reason: 'calling out their guardedness — makes them shut down more' };
+        }
+        break;
+      }
+      case 2: {
+        const hasBridging = /\b(but|however|going back|returning to|about|regarding|specifically|my question was|originally|i asked|you didn't answer|earlier you|still haven't|what about)\b/.test(q);
+        const isAccepting = /^(that's (interesting|fascinating|great|true|fair|important)|so (tell me|what about|how about)|yes|yeah|i (see|understand|agree|get it)|okay|ok|alright|right|interesting|fascinating|and (what about|tell me)|cool)\b/.test(q);
+        if (!hasBridging && isAccepting) {
+          return { bad: true, reason: 'accepted the redirect instead of circling back to the original question' };
+        }
+        if (!hasBridging && wordCount < 12 && !/\b(what|who|why|when|how|where|which)\b/.test(q)) {
+          return { bad: true, reason: 'vague follow-up with no callback to the original question' };
+        }
+        break;
+      }
+      case 3: {
+        if (/\b(don't you think|isn't it true|you (have to|must) admit|come on|you can't deny|obviously|clearly you|how can you|you caused|you're responsible|it's your fault)\b/.test(q)) {
+          return { bad: true, reason: 'confrontational framing — makes them dig in harder' };
+        }
+        if (/\b(why are you (so defensive|getting upset|so sensitive)|you seem (upset|defensive|bothered|annoyed))\b/.test(q)) {
+          return { bad: true, reason: 'pointing out their defensiveness — escalates it' };
+        }
+        break;
+      }
+      case 4: {
+        const isYesNo = /^(is|are|was|were|do|does|did|can|could|would|will|has|have)\b/.test(q);
+        const hasSpecificDemand = /\b(exactly|specifically|precise|number|name|date|who|when|where)\b/.test(q);
+        if (isYesNo && !hasSpecificDemand && wordCount < 15) {
+          return { bad: true, reason: 'yes\/no question — too easy to answer without giving any specifics' };
+        }
+        if (/\b(things|stuff|situation|sort of|kind of|generally|overall|in general|vaguely|broadly)\b/.test(q) && !hasSpecificDemand && wordCount < 15) {
+          return { bad: true, reason: 'vague question — matches their vagueness instead of pressing for specifics' };
+        }
+        break;
+      }
+      case 5: {
+        if (/\b(commitment|community|proud|values|mission|record speaks|what (do|would) you want (people|everyone|us|the public) to know|tell (us|me|everyone) about your)\b/.test(q) && wordCount < 18) {
+          return { bad: true, reason: 'asking about their talking points — hands them their prepared script' };
+        }
+        if (/\b(what would you (like|want) (people|everyone) to (know|understand|hear)|what('s| is) your (message|vision|commitment|dedication))\b/.test(q)) {
+          return { bad: true, reason: 'open-mic question — gives them a platform to deliver more messaging' };
+        }
+        break;
+      }
+    }
+
+    return { bad: false };
+  }
+
   async function calculateTrustLevel(transcript, currentQuestion = '') {
     // Initialize trust history if not exists
     if (typeof state.trustHistory === 'undefined') {
@@ -3081,29 +3235,156 @@ Respond with ONLY the JSON object, no other text.`;
     
     // If we have a current question, score it and update trust
     if (currentQuestion) {
-      // Get previous answer if available
-      const prevAnswer = transcript.length >= 2 
+      const prevAnswer = transcript.length >= 2
         ? String(transcript[transcript.length - 1] || '').replace(/^A:\s*/i, '')
         : '';
-      
-      // Score the current question using personality-specific criteria
+
+      const prevTrust = state.trustHistory;
       const currentScore = await scoreQuestionTurn(currentQuestion, prevAnswer, personalityIndex);
-      
-      // Update trust using exponential moving average (alpha = 0.75)
-      // trust_t = alpha * trust_{t-1} + (1 - alpha) * score_t
+
       const alpha = 0.75;
       state.trustHistory = alpha * state.trustHistory + (1 - alpha) * currentScore;
-      
-      // Clamp between 0.1 and 0.9
+
+      // Bad questions get an extra trust penalty on top of the normal EMA
+      const badCheck = detectBadQuestion(currentQuestion, prevAnswer, personalityIndex);
+      if (badCheck.bad) {
+        state.trustHistory -= 0.12;
+        console.log(`[Trust] ⚠️ BAD QUESTION (${badCheck.reason})`);
+      }
+
       state.trustHistory = Math.max(0.1, Math.min(0.9, state.trustHistory));
+
+      const pct = Math.round(((state.trustHistory - 0.1) / 0.8) * 100);
+      const delta = state.trustHistory - prevTrust;
+      state.lastTrustDelta = delta; // used by buildIntervieweePrompt for trend direction
+      console.log(
+        `[Trust] Q: "${currentQuestion.substring(0, 60)}"\n` +
+        `  Question score: ${currentScore.toFixed(3)}${badCheck.bad ? ' + bad question penalty' : ''} | ` +
+        `Trust: ${prevTrust.toFixed(3)} → ${state.trustHistory.toFixed(3)} (${delta >= 0 ? '+' : ''}${delta.toFixed(3)}) = ${pct}%`
+      );
     }
-    
+
+    updateTrustMeter(state.trustHistory);
     return state.trustHistory;
+  }
+
+  function updateTrustMeter(trustLevel) {
+    const fill = document.getElementById('trustMeterFill');
+    const label = document.getElementById('trustMeterLabel');
+    const meter = document.getElementById('trustMeter');
+    const avatar = document.getElementById('trustMeterAvatar');
+    if (!fill || !label || !meter) return;
+
+    if (state.inBrainstormMode || state.inReflectionMode) {
+      meter.style.display = 'none';
+      return;
+    }
+    meter.style.display = 'flex';
+
+    // Set avatar to interviewee image
+    if (avatar) {
+      const imgSrc = state.data?.intervieweeImage || '';
+      avatar.src = imgSrc;
+      avatar.style.display = imgSrc ? 'block' : 'none';
+    }
+
+    // Map 0.1–0.9 → 0–100%
+    const pct = Math.round(((trustLevel - 0.1) / 0.8) * 100);
+    fill.style.width = `${pct}%`;
+
+    if (pct < 15) label.textContent = '🔒 Shut down';
+    else if (pct < 30) label.textContent = '😒 Still resistant';
+    else if (pct < 50) label.textContent = '😐 Slightly easier';
+    else if (pct < 65) label.textContent = '🤔 Engaging';
+    else if (pct < 82) label.textContent = '😌 Opening up';
+    else label.textContent = '😊 Talking freely';
   }
 
   /**
    * Builds base interviewee response prompt (Part 1: Generate response)
    */
+  function buildIntervieweePrompt(userQuery, intervieweeName, trustLevel, personality, userShowingEffort = false) {
+    const transcript = state.fullTranscript;
+    const summary = state.intervieweeSummary;
+    const personalityIndex = state.personalityIndex !== undefined ? state.personalityIndex : 2;
+    const details = PERSONALITY_DETAILS[personalityIndex] || PERSONALITY_DETAILS[2];
+
+    // Linear map: trust 0.1 → strength 1.0, trust 0.9 → strength 0.0
+    let personalityStrength = Math.max(0, 1.0 - (trustLevel - 0.1) / 0.8);
+    if (userShowingEffort) personalityStrength *= 0.6;
+
+    const pct = Math.round(((trustLevel - 0.1) / 0.8) * 100);
+    const delta = state.lastTrustDelta || 0;
+    const trendNote = delta < -0.04
+      ? `\n⚠️ TRUST IS FALLING: The journalist just lost ground with a weak question. Be noticeably MORE closed than last time. Shorter answer, more guarded.`
+      : delta > 0.12
+      ? `\n✅ TRUST IS RISING FAST: The journalist earned this. Give noticeably more than last time.`
+      : '';
+
+    let intensityLevel, exampleShape;
+    if (personalityStrength > 0.72) {
+      intensityLevel = "STRONG";
+      exampleShape = details.intensityExamples?.strong || '';
+    } else if (personalityStrength > 0.38) {
+      intensityLevel = "MODERATE";
+      exampleShape = details.intensityExamples?.moderate || '';
+    } else if (personalityStrength > 0.15) {
+      intensityLevel = "SLIGHT";
+      exampleShape = details.intensityExamples?.slight || '';
+    } else {
+      intensityLevel = "MINIMAL";
+      exampleShape = details.intensityExamples?.minimal || '';
+    }
+
+    // Personality-specific disclosure rule for this intensity level
+    const disclosureRule = details.disclosureRules?.[intensityLevel] || exampleShape;
+
+    const effortNote = userShowingEffort
+      ? `\nThe journalist is clearly rephrasing or being more specific — give them slightly more than the level above would normally call for.`
+      : '';
+
+    const behaviorList = details.behaviors.map(b => `• ${b}`).join('\n');
+
+    const skillScore = typeof state.lastSkillScore === 'number' ? state.lastSkillScore : 0;
+    const skillNote = skillScore >= 0.5
+      ? `\n\n⚡ JOURNALIST SHOWED GOOD TECHNIQUE: This question used the right approach for your personality. Even though you are still in character, you MUST let at least one concrete, specific piece of information slip through somewhere in your answer — a real fact, name, date, place, or direct answer to part of their question that they could actually use in an article. Stay in character, but something usable must come through.`
+      : '';
+
+    return `You ARE ${intervieweeName}. You are being interviewed right now by a student journalist.
+
+=== YOUR PERSONALITY ===
+${details.name}: ${details.description}
+
+Your specific behaviors:
+${behaviorList}
+
+How you sound (example):
+"${details.example}"
+
+=== YOUR OPENNESS RIGHT NOW ===
+Trust level: ${pct}% open${trendNote}
+Intensity: ${intensityLevel}
+
+DISCLOSURE RULE — this is the most important instruction:
+${disclosureRule}${effortNote}${skillNote}
+
+What your response structure should look like at this level:
+${exampleShape}
+
+CRITICAL: Your response must be NOTICEABLY DIFFERENT from a STRONG response. If ${pct}% trust means MODERATE, the journalist must clearly feel they got more than before. If trust is falling, they must feel you closing back down.
+
+=== WHO YOU ARE (use this for real content — names, roles, facts) ===
+${summary}
+
+=== CONVERSATION SO FAR ===
+${transcript.length > 0 ? transcript.join('\n') : '[This is the very first question]'}
+
+=== THE JOURNALIST JUST ASKED ===
+"${userQuery}"
+
+Respond as ${intervieweeName} in first person. Sound like a real person talking — not an essay. Do NOT break character. Output ONLY your spoken words.`.trim();
+  }
+
   function buildBaseIntervieweePrompt(userQuery, intervieweeName, intervieweeInfo) {
     const transcript = state.fullTranscript;
     const summary = state.intervieweeSummary;
@@ -3146,75 +3427,60 @@ Respond with ONLY the JSON object, no other text.`;
    * Builds personality refactoring prompt (Part 2: Add personality based on trust)
    */
   function buildPersonalityRefactorPrompt(baseResponse, personality, trustLevel, userQuery, intervieweeName, userShowingEffort = false) {
-    // Calculate personality strength (strong at low trust, fading as trust increases)
-    // At trust 0.1: strength = 1.0 (full personality)
-    // At trust 0.9: strength = 0.1 (minimal personality)
     let personalityStrength = 1.0 - (trustLevel * 0.9);
-    
-    // Reduce personality strength if user is showing effort (being more specific/rephrasing)
     if (userShowingEffort) {
-      personalityStrength *= 0.5; // Cut personality strength in half when user shows effort
-    }
-    
-    // Determine personality intensity description
-    let intensityDescription;
-    if (personalityStrength > 0.7) {
-      intensityDescription = "STRONGLY";
-    } else if (personalityStrength > 0.4) {
-      intensityDescription = "MODERATELY";
-    } else if (personalityStrength > 0.2) {
-      intensityDescription = "SLIGHTLY";
-    } else {
-      intensityDescription = "MINIMALLY (almost natural, just a subtle hint)";
+      personalityStrength *= 0.5;
     }
 
-    const effortContext = userShowingEffort 
-      ? "\n\nCRITICAL - USER IS SHOWING EFFORT: The journalist is being more specific or rephrasing to clarify their question. You MUST answer the question directly and clearly. The personality trait should be VERY SUBTLE - almost natural. The question must be answered." 
+    let intensityLevel;
+    if (personalityStrength > 0.7) {
+      intensityLevel = "STRONG";
+    } else if (personalityStrength > 0.4) {
+      intensityLevel = "MODERATE";
+    } else if (personalityStrength > 0.2) {
+      intensityLevel = "SLIGHT";
+    } else {
+      intensityLevel = "MINIMAL";
+    }
+
+    // What the personality allows at each intensity — no conflicting "must answer" at high intensity
+    const intensityGuide = {
+      STRONG: `The personality dominates. You can:
+- Give a short, deflected, or incomplete answer
+- Pivot mid-answer to what YOU want to talk about
+- Be guarded, evasive, or redirect the conversation
+- The interviewer should NOT get a full satisfying answer`,
+      MODERATE: `The personality is clearly visible. You can:
+- Partially answer then steer elsewhere
+- Be noticeably guarded or evasive
+- The interviewer gets some information but not all`,
+      SLIGHT: `The personality is present but the answer is mostly complete.
+- A slight edge, guardedness, or deflection at the end
+- The interviewer gets most of what they asked`,
+      MINIMAL: `Almost natural. Give a full, direct answer with the faintest trace of personality — just a small quirk in tone or word choice.`
+    }[intensityLevel];
+
+    const effortNote = userShowingEffort
+      ? `\nThe interviewer is clearly trying harder (rephrasing or being more specific). Ease up — give a more complete answer with only subtle personality flavor.`
       : "";
 
-    return `
-    You are refactoring an interview response to add personality traits. The interviewee is ${intervieweeName}.
-    
-    Original response:
-    "${baseResponse}"
-    
-    Original question:
-    "${userQuery}"
-    
-    Personality trait to add: ${personality}
-    
-    IMPORTANT - Personality intensity: Apply this trait ${intensityDescription}.
-    
-    - If intensity is STRONGLY: Make the personality trait very noticeable and prominent in the response.
-    - If intensity is MODERATELY: Make the personality trait clearly present but not overwhelming.
-    - If intensity is SLIGHTLY: Add subtle hints of the personality trait, but keep the response mostly natural.
-    - If intensity is MINIMALLY: Add just a very subtle hint of the personality, almost like a natural quirk.
-    ${effortContext}
-    
-    Trust level: ${(trustLevel * 100).toFixed(0)}% (${trustLevel < 0.3 ? 'low' : trustLevel < 0.6 ? 'medium' : 'high'})
-    - Low trust (0-30%): Personality should be STRONG. Be more guarded, skeptical, shorter, or defensive.
-    - Medium trust (30-60%): Personality should be MODERATE. Balance between personality and openness.
-    - High trust (60-90%): Personality should be MINIMAL. Be more open, warmer, and natural - personality fades.
-    
-    CRITICAL RULE - ANSWER THE QUESTION:
-    - You MUST answer the question asked. The personality trait should flavor HOW you answer, not prevent you from answering.
-    - Even with strong personality, you must provide an answer to the question - personality affects tone, detail level, or approach, but the core answer must be present.
-    - As trust increases and personality fades, the answer should become more direct and complete.
-    - If the original response has a clear answer, keep that answer even when adding personality.
-    - Personality traits like "avoiding questions" or "being vague" should be SUBTLE - you still need to answer, just with less detail or more deflection, not complete avoidance.
-    - When the user shows effort (being specific/rephrasing), you MUST answer clearly regardless of personality strength.
-    
-    Refactoring rules:
-    1. ALWAYS preserve the core answer from the original response - personality modifies HOW you answer, not WHETHER you answer.
-    2. Keep the core content and information from the original response.
-    3. Maintain natural conversation flow and voice.
-    4. Add the personality trait at the specified intensity level, but ensure an answer is still provided.
-    5. Adjust length, tone, and openness based on trust level, but never eliminate the answer entirely.
-    6. If trust is high, the personality should barely show - just a subtle hint, and answers should be clear and complete.
-    7. If trust is low, the personality can be strong, but you still must address the question - be shorter, more guarded, or more defensive, but still provide an answer.
-    
-    Refactored response (respond ONLY with the refactored answer, no explanations):
-    `.trim();
+    const skillScore = typeof state.lastSkillScore === 'number' ? state.lastSkillScore : 0;
+    const skillNote = skillScore >= 0.5
+      ? `\n⚡ JOURNALIST SHOWED GOOD TECHNIQUE: Even at ${intensityLevel} intensity, you MUST include at least one concrete, specific piece of information (a fact, name, date, or direct answer to part of their question) that they could use in an article. Stay in character — but something usable must slip through.`
+      : '';
+
+    return `You are roleplaying as ${intervieweeName} in a live interview with a student journalist. Rewrite the response below to express this personality trait at the specified intensity.
+
+PERSONALITY: ${personality}
+INTENSITY: ${intensityLevel}
+
+${intensityGuide}${effortNote}${skillNote}
+
+ORIGINAL QUESTION: "${userQuery}"
+ORIGINAL RESPONSE (use as a factual reference, not a script):
+"${baseResponse}"
+
+Rewrite the response in first person as ${intervieweeName}. Sound like a real person speaking — not a list, not an essay. Keep it concise (1–5 sentences). Output ONLY the rewritten response with no labels or explanation.`.trim();
   }
   
 
@@ -3227,7 +3493,8 @@ Respond with ONLY the JSON object, no other text.`;
       return '';
     }
     
-    let cleaned = response.includes(":") ? response.split(':')[1] : response;
+    // Strip known AI response prefixes (A:, Answer:, Response:, Assistant:) at start only
+    let cleaned = response.replace(/^(?:A|Answer|Response|Assistant)\s*:\s*/i, '');
     cleaned = cleaned.replace(/\*[^*]*\*/g, '').trim();
     
     // If cleaning resulted in empty string, return the original response (trimmed)
@@ -3400,92 +3667,72 @@ Respond with ONLY the JSON object, no other text.`;
 
         const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
         recognition.lang = 'en-US';
+        recognition.continuous = true;   // don't stop on short pauses
         recognition.interimResults = false;
         recognition.maxAlternatives = 1;
 
-        let transcript = null;
+        let accumulatedTranscript = '';
         let recognitionComplete = false;
+        let silenceTimer = null;
+        const SILENCE_GRACE_MS = 2000; // wait 2s of silence before finalizing
 
         recognition.onstart = () => {
           elements.micButton.querySelector('img').src = IMAGES.micClicked;
         };
 
-        recognition.onresult = async (event) => {
-          transcript = event.results[0][0].transcript;
-          console.log('Speech received: ', transcript);
-          recognitionComplete = true;
-          
-          // Stop recording when recognition completes
-          if (recording) {
-            recording.stop();
-          }
-          
-          try {
-            if (recording) {
-              const { audioBlob, duration } = await recording.promise;
-              elements.micButton.querySelector('img').src = IMAGES.mic;
-              resolve({ transcript, audioBlob, duration });
-            } else {
-              elements.micButton.querySelector('img').src = IMAGES.mic;
-              resolve({ transcript, audioBlob: null, duration: 0 });
+        // Each time the user says something, add it to the accumulated transcript
+        // and reset the silence countdown. The timer starts here (not onspeechend)
+        // because onspeechend is unreliable with continuous mode.
+        recognition.onresult = (event) => {
+          if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            if (event.results[i].isFinal) {
+              const chunk = event.results[i][0].transcript;
+              accumulatedTranscript += (accumulatedTranscript ? ' ' : '') + chunk;
+              console.log('Speech chunk received:', chunk);
             }
-          } catch (recordingError) {
-            console.error('Error getting audio blob:', recordingError);
-            elements.micButton.querySelector('img').src = IMAGES.mic;
-            // Still resolve with transcript even if audio failed
-            resolve({ transcript, audioBlob: null, duration: 0 });
           }
+          // 2 seconds after the last recognized chunk, stop recording
+          silenceTimer = setTimeout(() => {
+            recognition.stop();
+          }, SILENCE_GRACE_MS);
         };
 
         recognition.onerror = async (event) => {
-          console.error('Error capturing speech: ', event.error);
-          if (recording) {
-            recording.stop();
-          }
+          if (recognitionComplete) return;
+          if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
           recognitionComplete = true;
+          if (recording) recording.stop();
           elements.micButton.querySelector('img').src = IMAGES.mic;
-          
-          // Try to get audio blob even if recognition failed
-          if (recording) {
-            try {
-              const { audioBlob, duration } = await recording.promise;
-              if (event.error !== 'no-speech') {
-                reject(event.error);
-              } else {
-                resolve({ transcript: null, audioBlob, duration });
-              }
-            } catch (recordingError) {
-              if (event.error !== 'no-speech') {
-                reject(event.error);
-              } else {
-                reject(new Error('No speech detected'));
-              }
-            }
+          console.error('Error capturing speech:', event.error);
+          if (event.error === 'no-speech') {
+            reject(new Error('No speech detected'));
           } else {
-            if (event.error !== 'no-speech') {
-              reject(event.error);
-            } else {
-              reject(new Error('No speech detected'));
-            }
+            reject(event.error);
           }
         };
 
-        recognition.onend = () => {
-          if (!recognitionComplete && recording) {
-            // Recognition ended without result - stop recording
+        // Recognition fully stopped — resolve with everything collected so far
+        recognition.onend = async () => {
+          if (recognitionComplete) return;
+          recognitionComplete = true;
+          if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+          elements.micButton.querySelector('img').src = IMAGES.mic;
+
+          const transcript = accumulatedTranscript.trim() || null;
+          console.log('Speech recognition complete:', transcript);
+
+          if (recording) {
             recording.stop();
-            elements.micButton.querySelector('img').src = IMAGES.mic;
-            recording.promise.then(({ audioBlob, duration }) => {
-              resolve({ transcript: null, audioBlob, duration });
-            }).catch(() => {
-              reject(new Error('Speech recognition ended without result'));
-            });
-          } else if (!recognitionComplete) {
-            elements.micButton.querySelector('img').src = IMAGES.mic;
-            reject(new Error('Speech recognition ended without result'));
+            try {
+              const { audioBlob, duration } = await recording.promise;
+              resolve({ transcript, audioBlob, duration });
+            } catch (recordingError) {
+              console.error('Error getting audio blob:', recordingError);
+              resolve({ transcript, audioBlob: null, duration: 0 });
+            }
           } else {
-            elements.micButton.querySelector('img').src = IMAGES.mic;
-            console.log('Speech recognition service disconnected');
+            resolve({ transcript, audioBlob: null, duration: 0 });
           }
         };
 
@@ -3833,7 +4080,7 @@ Respond with ONLY the JSON object, no other text.`;
    * Fetches Google API key from server
    */
   async function getGoogleApiKey() {
-    const response = await fetch('/google-api-key');
+    const response = await fetch('/google-tts-api-key');
     const data = await response.json();
     return data.apiKey;
   }
@@ -5267,11 +5514,182 @@ Respond with ONLY the JSON object, no other text.`;
    * @param {string} feedbackText - Markdown formatted feedback text
    * @param {HTMLElement} container - Container to append feedback sections to
    */
+  // Maps module name to CSS class suffix for colored tag pills
+  const MODULE_TAG_CLASSES = {
+    'Question Quality':      'question-quality',
+    'Cognitive Engagement':  'cognitive-engagement',
+    'Power Dynamics':        'power-dynamics',
+    'Ethics and Privacy':    'ethics-privacy',
+    'Cultural Knowledge':    'cultural-knowledge',
+  };
+
   function renderAudioFeedback(feedbackText, container) {
     if (!feedbackText || !container) return;
 
-    // Clear container
     container.innerHTML = '';
+
+    // Try new JSON format first (strip markdown code fences Gemini sometimes adds)
+    let parsed = null;
+    try {
+      const stripped = feedbackText.trim()
+        .replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+      parsed = JSON.parse(stripped);
+    } catch (_) { /* fall through to markdown */ }
+
+    if (parsed && (parsed.strengths || parsed.areas_for_growth)) {
+      // ── New JSON path: module-tagged strengths and areas_for_growth ──
+
+      // Build a section with module tag pills inserted as DOM nodes after the bullet
+      const buildTaggedSection = (sectionTitle, items, type) => {
+        if (!items?.length) return null;
+        const section = createFeedbackSection(sectionTitle, items.map(i => i.text), type, true);
+        section.querySelectorAll('.feedback-section-list-item').forEach((li, idx) => {
+          const item = items[idx];
+          if (!item) return;
+          const tagClass = MODULE_TAG_CLASSES[item.module] || 'question-quality';
+          const pill = document.createElement('span');
+          pill.className = `module-tag module-tag-${tagClass}`;
+          pill.textContent = item.module;
+          const bullet = li.querySelector('.feedback-section-bullet');
+          if (bullet) bullet.after(pill); else li.insertBefore(pill, li.firstChild);
+        });
+        return section;
+      };
+
+      const strengthsSection = buildTaggedSection('Strengths', parsed.strengths, 'strengths');
+      if (strengthsSection) container.appendChild(strengthsSection);
+
+      const growthSection = buildTaggedSection('Areas for Growth', parsed.areas_for_growth, 'weaknesses');
+      if (growthSection) container.appendChild(growthSection);
+
+      if (parsed.suggestion) {
+        const section = createFeedbackSection('Scaffolded Suggestions', [parsed.suggestion], 'suggestions', true);
+        container.appendChild(section);
+      }
+
+      // Metacognitive question block (mirrors legacy markdown path construction)
+      if (parsed.metacognitive_question) {
+        const exampleAnswer = parsed.metacognitive_example || '';
+        const metacognitiveSection = document.createElement('div');
+        metacognitiveSection.classList.add('feedback-section', 'feedback-section-metacognitive');
+        const sectionTitle = document.createElement('h4');
+        sectionTitle.classList.add('feedback-section-title');
+        sectionTitle.textContent = 'Reflection Question';
+        metacognitiveSection.appendChild(sectionTitle);
+        const questionDiv = document.createElement('div');
+        questionDiv.classList.add('metacognitive-question-item');
+        questionDiv.style.marginBottom = '12px';
+        questionDiv.style.padding = '12px';
+        questionDiv.style.backgroundColor = '#f7f9fc';
+        questionDiv.style.borderRadius = '8px';
+        const questionText = document.createElement('h4');
+        questionText.classList.add('metacognitive-question-text');
+        questionText.style.margin = '0 0 12px 0';
+        questionText.style.fontSize = '16px';
+        questionText.textContent = `Q: ${parsed.metacognitive_question}`;
+        questionDiv.appendChild(questionText);
+
+        // Answer container with textarea and mic button
+        const answerContainer = document.createElement('div');
+        answerContainer.classList.add('metacognitive-answer-container');
+        answerContainer.style.display = 'flex';
+        answerContainer.style.gap = '10px';
+        answerContainer.style.alignItems = 'flex-start';
+
+        const answerInput = document.createElement('textarea');
+        answerInput.classList.add('metacognitive-answer-input');
+        answerInput.style.flex = '1';
+        answerInput.style.minHeight = '80px';
+        answerInput.style.padding = '12px';
+        answerInput.style.fontSize = '14px';
+        answerInput.style.fontFamily = "'Open Sans', sans-serif";
+        answerInput.style.border = '2px solid #ddd';
+        answerInput.style.borderRadius = '8px';
+        answerInput.style.resize = 'vertical';
+        answerInput.dataset.segmentIndex = container.dataset.segmentIndex || '';
+
+        const segmentIndex = container.dataset.segmentIndex;
+        if (segmentIndex !== undefined && segmentIndex !== '') {
+          const segIdx = parseInt(segmentIndex, 10);
+          if (!isNaN(segIdx) && state.audioSegments[segIdx]?.metacognitiveAnswer) {
+            answerInput.value = state.audioSegments[segIdx].metacognitiveAnswer;
+          } else if (exampleAnswer) {
+            answerInput.placeholder = exampleAnswer;
+            answerInput.style.fontStyle = 'italic';
+          } else {
+            answerInput.placeholder = 'Type your reflection here...';
+          }
+        } else {
+          if (exampleAnswer) {
+            answerInput.placeholder = exampleAnswer;
+            answerInput.style.fontStyle = 'italic';
+          } else {
+            answerInput.placeholder = 'Type your reflection here...';
+          }
+        }
+
+        answerInput.addEventListener('input', function() {
+          if (this.value.length > 0) {
+            this.style.fontStyle = 'normal';
+            this.style.color = '#333';
+          }
+        });
+        answerInput.addEventListener('change', function() {
+          if (this.value.length > 0) {
+            this.style.fontStyle = 'normal';
+            this.style.color = '#333';
+          }
+        });
+
+        let saveTimeout;
+        answerInput.addEventListener('input', () => {
+          clearTimeout(saveTimeout);
+          saveTimeout = setTimeout(() => {
+            if (segmentIndex !== undefined && segmentIndex !== '') {
+              const segIdx = parseInt(segmentIndex, 10);
+              if (!isNaN(segIdx) && state.audioSegments[segIdx]) {
+                if (!state.audioSegments[segIdx].metacognitiveAnswer) {
+                  state.audioSegments[segIdx].metacognitiveAnswer = '';
+                }
+                state.audioSegments[segIdx].metacognitiveAnswer = answerInput.value;
+                scheduleSave();
+              }
+            }
+          }, 1000);
+        });
+
+        const micButton = document.createElement('button');
+        micButton.classList.add('control-button', 'metacognitive-mic-button');
+        micButton.type = 'button';
+        micButton.title = 'Click to speak your answer';
+        micButton.style.margin = '0';
+        micButton.style.padding = '8px';
+        micButton.style.display = 'flex';
+        micButton.style.alignItems = 'center';
+        micButton.style.justifyContent = 'center';
+        micButton.style.marginTop = '4px';
+        const micIcon = document.createElement('img');
+        micIcon.src = IMAGES.mic;
+        micIcon.alt = 'Microphone';
+        micIcon.style.width = '20px';
+        micIcon.style.height = '24px';
+        micIcon.style.objectFit = 'contain';
+        micButton.appendChild(micIcon);
+        micButton.addEventListener('click', async () => {
+          await handleMetacognitiveMicClick(micButton, answerInput, segmentIndex);
+        });
+
+        answerContainer.appendChild(answerInput);
+        answerContainer.appendChild(micButton);
+        questionDiv.appendChild(answerContainer);
+        metacognitiveSection.appendChild(questionDiv);
+        container.appendChild(metacognitiveSection);
+      }
+
+      return; // done with JSON path
+    }
+
+    // ── Legacy markdown path (backward compat for saved interviews) ──
 
     // Parse markdown sections
     const strengthsMatch = feedbackText.match(/\*\*Strengths:\*\*\s*\n(.*?)(?=\*\*Weaknesses:\*\*|\*\*Scaffolded Suggestions:\*\*|\*\*Metacognitive Question:\*\*|$)/s);
@@ -5629,7 +6047,7 @@ ${transcriptContent}`;
 
     const prompt = specificPrompt + getCommonAreaFeedbackPrompt('Cognitive Engagement');
 
-    const response = await callClaude(prompt);
+    const response = await callGemini(prompt);
     return parseStructuredFeedback(response);
   }
 
@@ -5655,7 +6073,7 @@ ${transcriptContent}`;
 
     const prompt = specificPrompt + getCommonAreaFeedbackPrompt('General Performance (all areas)');
 
-    const response = await callClaude(prompt);
+    const response = await callGemini(prompt);
     return parseStructuredFeedback(response);
   }
 
@@ -5687,7 +6105,7 @@ ${transcriptText}
 Generate exactly 2-3 questions as a JSON array of strings, like: ["Question 1", "Question 2", "Question 3"]`;
 
     try {
-      const response = await callClaude(prompt);
+      const response = await callGemini(prompt);
       
       // Try to extract JSON array from response
       let questions = [];
@@ -5832,7 +6250,7 @@ Focus on techniques that are most important for handling "${personalityName}". I
 Return ONLY valid JSON, no other text.`;
 
     try {
-      const response = await callClaude(prompt);
+      const response = await callGemini(prompt);
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const guidance = JSON.parse(jsonMatch[0]);
@@ -6341,7 +6759,7 @@ ${transcriptContent}`;
 
     const prompt = specificPrompt + getCommonAreaFeedbackPrompt('Question Quality');
 
-    const response = await callClaude(prompt);
+    const response = await callGemini(prompt);
     return parseStructuredFeedback(response);
   }
 
@@ -6359,7 +6777,7 @@ ${transcriptContent}`;
 
     const prompt = specificPrompt + getCommonAreaFeedbackPrompt('Power Dynamics');
 
-    const response = await callClaude(prompt);
+    const response = await callGemini(prompt);
     return parseStructuredFeedback(response);
   }
 
@@ -6377,7 +6795,7 @@ ${transcriptContent}`;
 
     const prompt = specificPrompt + getCommonAreaFeedbackPrompt('Cultural Knowledge');
 
-    const response = await callClaude(prompt);
+    const response = await callGemini(prompt);
     return parseStructuredFeedback(response);
   }
 
@@ -6395,7 +6813,7 @@ ${transcriptContent}`;
 
     const prompt = specificPrompt + getCommonAreaFeedbackPrompt('Ethics and Privacy');
 
-    const response = await callClaude(prompt);
+    const response = await callGemini(prompt);
     return parseStructuredFeedback(response);
   }
 
@@ -6490,7 +6908,7 @@ ${transcriptContent}`;
 
     if (articleText && !state.articleFormatted) {
       try {
-        state.formattedArticle = await callOpenAI(
+        state.formattedArticle = await callGemini(
           `Remove any syntax errors and incorrectly pasted parts from the following article. DO NOT CHANGE THE WORDS OF THE ARTICLE OR SUMMARIZE IT. Then format the article to be well-structured and readable in HTML format, ONLY USE headers and paragraphs. Do the entire article without leaving anything out! Do not add any additional text outside of what I want (eg., here is the article:)  \n\n${articleText}`
         );
         state.formattedArticle = state.formattedArticle.replace(
@@ -6808,6 +7226,8 @@ ${transcriptContent}`;
     } else {
       elements.micButton.style.display = 'none';
     }
+    // Show trust meter only in interview mode, initialized to current trust level
+    updateTrustMeter(state.trustHistory || 0.1);
     
     // Keep resources/tips visible at all times
     const questionTipsIcon = id('questionTipsIcon');
