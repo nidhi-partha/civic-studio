@@ -1,1 +1,5 @@
-# test-heroku
+# Civic Studio
+
+Here is a video demo of CivicStudio: https://drive.google.com/drive/u/0/folders/1S7wv_FwWcmk49TpnxliYz1yRXeelof2W
+
+CivicStudio lets students practice journalistic interviewing by conducting simulated interviews with AI-generated interviewees. The core is a four-stage loop. The student poses a question by speech or text, and an interview generation pipeline runs two sequential LLM calls to produce the reply: a base response, then a personality refactor that shapes it to the interviewee's character. An adaptive behavior engine tracks a live trust signal that updates each turn based on how the student is questioning, and that signal modulates how forthcoming and rich the interviewee's answers get. When the student pauses to reflect, a feedback module reads the full session transcript and generates scaffolded, formative feedback organized as cues, hints, and reflection prompts rather than direct corrections. The student then revises their approach and re-enters the interview, with the accumulated trust state carrying forward so the interviewee's posture reflects the whole encounter.
