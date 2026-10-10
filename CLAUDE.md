@@ -13,6 +13,12 @@ node public/reading-page-personality-trust.test.js
 
 # Run integration tests
 node public/reading-page-scoring.integration.test.js
+
+# Scoring/personality dev sandbox: with the server running, open
+# http://localhost:5001/scoring-sandbox.html — runs curated good/ok/bad questions through
+# each of the 6 personalities (heuristic scorer always; check the "Also run the live LLM
+# judge" box to additionally exercise the real Gemini-backed path) and reports whether the
+# good > ok > bad fairness invariant holds per personality.
 ```
 
 Environment variables required (set in a `.env` file or Heroku config):
@@ -42,25 +48,32 @@ All pages are vanilla JS ES modules loaded from `public/`:
 The main page manages a large `state` object (defined at the top of `reading-page.js`) tracking:
 - `fullTranscript` / `brainstormTranscript` / `reflectionTranscript` — conversation history
 - `personalityIndex` — which of 6 interviewee personalities is active (0–5, defined in `reading-page-constants.js`)
-- `audioSegments` — per-turn audio (Google TTS) and feedback data
-- `modules` — 5 evaluation areas (Cognitive Engagement, Question Quality, Power Dynamics, Ethics and Privacy, Cultural Knowledge)
+- `trustHistory` — current trust level (0.1–0.9), updated via an EMA each turn
+- `audioSegments` — per-turn audio (Google TTS), feedback data, and (see below) a `trustSnapshot` recording that turn's score/trust-before/trust-after/personality-strength
+- `modules` — 5 evaluation areas (Cognitive Engagement, Question Quality, Power Dynamics, Ethics and Privacy, Cultural Knowledge) — qualitative, post-interview reflection feedback only; not tied to trust
 
 State is persisted to **Firestore** under `users/{uid}/interviews/{interviewId}` via `loadStateFromFirestore` / `saveStateToFirestore`.
 
-### Scoring System (extracted for testability)
-- **`reading-page-scoring.js`** — Pure functions for question scoring and trust tracking. Key exports:
-  - `scoreQuestionTurn(question, previousAnswer, personalityIndex)` → 0–1 score
-  - `updateTrustEMA(oldTrust, newScore, alpha)` — exponential moving average trust tracker
+Trust is shown per-block (a small meter in the corner of each `.qa-block`), not as a single bottom-bar meter. Hitting "Redo" on a question recalculates that turn's trust using the correct preceding context and cascades the correction forward through every later block's trust meter (never rewriting their recorded answers/audio) — see `recalculateTrustFromSegment`/`recomputeCascade`. Blocks whose trust was recalculated this way, without their own content being rewritten, get a dashed outline + a "needs redo — answered under a previous trust level" badge (`trustSnapshot.needsReview`).
+
+### Scoring System (single source of truth)
+- **`reading-page-scoring.js`** — Pure functions for question scoring, trust EMA, and personality strength. `reading-page.js` imports and uses these directly (no duplicate inline logic). Key exports:
+  - `scoreQuestionTurnLLM(question, previousAnswer, personalityIndex, { callGemini })` — async LLM-judge scorer (dependency-injected `callGemini` so it also runs under plain `node`); falls back to `scoreQuestionHeuristicTurn` on failure
+  - `scoreQuestionHeuristicTurn(question, previousAnswer, personalityIndex)` → 0–1 score, the sync heuristic/regex fallback
+  - `detectBadQuestion(question, previousAnswer, personalityIndex)` — personality-specific "bad question" patterns, applies an extra trust penalty
+  - `updateTrustEMA(oldTrust, newScore, alpha=0.55)` / `computeTrustUpdate(...)` — exponential moving average + bad-question penalty + clamp
+  - `applyRedoGuarantee(...)` — guarantees a genuinely better redo visibly raises trust vs. the original attempt
+  - `recomputeCascade(segments, editedIndex, { callGemini, personalityIndex })` — the redo recalculation engine (pure; returns a new array)
   - `calculatePersonalityStrength(trustLevel, userShowingEffort)` — drives AI personality intensity
   - `getPersonalityScoringCriteria(personalityIndex)` — per-personality scoring weights and technique detectors
-- **`reading-page-personality-trust.test.js`** — Unit tests (no framework, custom `TestRunner`)
-- **`reading-page-scoring.integration.test.js`** — Integration tests importing directly from `reading-page-scoring.js`
+- **`reading-page-personality-trust.test.js`** / **`reading-page-scoring.integration.test.js`** — unit/integration tests (no framework, custom `TestRunner`), importing directly from `reading-page-scoring.js`
+- **`scoring-sandbox.html`** (+ `scoring-sandbox.js`, `scoring-sandbox-ui.js`) — dev-only sandbox; runs curated good/ok/bad questions per personality through the same scoring functions and checks the good > ok > bad fairness invariant. Not linked from the app nav — open directly via the running server.
 
 ### AI Integration
-- `claude-api.js` — Calls `/claude/v1/messages` proxy using `claude-haiku-4-5`
+- `claude-api.js` — Calls `/claude/v1/messages` proxy using `claude-haiku-4-5`; used only for generating candidate interviewee name/description suggestions from the pasted article/topic (on `index.html`), with Gemini as its fallback
 - `gemini-api.js` — Calls `/gemini/generateContent` proxy using `gemini-2.5-flash`
 - `openai-api.js` — Calls `/openai/v1/chat/completions` proxy
-- The main page uses Claude for LLM-graded question feedback and interviewee responses; Gemini is used for article formatting/research
+- The main interview page uses Gemini (not Claude) for question scoring, interviewee responses, and module/reflection feedback; Claude's role is limited to the pre-interview suggestion step above
 
 ### Firebase
 - Auth: Firebase Authentication (email/password)

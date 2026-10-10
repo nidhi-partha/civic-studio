@@ -8,8 +8,10 @@ import {
   detectRepairMove,
   getPersonalityScoringCriteria,
   scoreQuestionHeuristics,
-  scoreQuestionTurn,
+  scoreQuestionHeuristicTurn,
   calculatePersonalityStrength,
+  applyRedoGuarantee,
+  computeTrustUpdate,
 } from './reading-page-scoring.js';
 
 // Simple test runner
@@ -98,9 +100,9 @@ test.describe('Trust EMA Calculation', () => {
     test.assertTrue(trust < 0.4, `After 10 iterations of score 0.1, trust should be low, got ${trust}`);
   });
 
-  test.it('should apply weight (25% new score, 75% old)', () => {
+  test.it('should apply the new default weight (45% new score, 55% old)', () => {
     const result = updateTrustEMA(0.5, 1.0);
-    const expected = 0.75 * 0.5 + 0.25 * 1.0; // 0.625
+    const expected = 0.55 * 0.5 + 0.45 * 1.0; // 0.725
     test.assertAlmostEqual(result, expected, 0.001);
   });
 
@@ -238,22 +240,25 @@ test.describe('Personality Weight Aggregation', () => {
 // ============================================================================
 
 test.describe('Personality Strength Calculation', () => {
-  test.it('should be strong (0.91) at low trust (0.1)', () => {
-    test.assertAlmostEqual(calculatePersonalityStrength(0.1), 0.91, 0.001);
+  // These now match the formula actually used live (buildIntervieweePrompt), consolidated
+  // here as the one true version — the old dead-code-matching formula (1 - trust*0.9) has
+  // been removed.
+  test.it('should be at full strength (1.0) at the lowest trust (0.1)', () => {
+    test.assertAlmostEqual(calculatePersonalityStrength(0.1), 1.0, 0.001);
   });
 
-  test.it('should be moderate (0.55) at medium trust (0.5)', () => {
-    test.assertAlmostEqual(calculatePersonalityStrength(0.5), 0.55, 0.001);
+  test.it('should be at half strength (0.5) at medium trust (0.5)', () => {
+    test.assertAlmostEqual(calculatePersonalityStrength(0.5), 0.5, 0.001);
   });
 
-  test.it('should be minimal (0.19) at high trust (0.9)', () => {
-    test.assertAlmostEqual(calculatePersonalityStrength(0.9), 0.19, 0.001);
+  test.it('should be at zero strength (0.0) at the highest trust (0.9)', () => {
+    test.assertAlmostEqual(calculatePersonalityStrength(0.9), 0.0, 0.001);
   });
 
-  test.it('should be halved when user shows effort', () => {
+  test.it('should be scaled by 0.6 when user shows effort', () => {
     const normal = calculatePersonalityStrength(0.5, false);
     const effort = calculatePersonalityStrength(0.5, true);
-    test.assertAlmostEqual(effort, normal * 0.5, 0.001);
+    test.assertAlmostEqual(effort, normal * 0.6, 0.001);
   });
 });
 
@@ -305,24 +310,77 @@ test.describe('Base Quality Features', () => {
 test.describe('Repair Bonus', () => {
   test.it('should add 0.1 bonus for repair moves', () => {
     // Low base score question + repair phrase: should be above raw score
-    const withRepair = scoreQuestionTurn('Let me rephrase — what did you think at the time?', '', 2);
-    const withoutRepair = scoreQuestionTurn('What did you think?', '', 2);
+    const withRepair = scoreQuestionHeuristicTurn('Let me rephrase — what did you think at the time?', '', 2);
+    const withoutRepair = scoreQuestionHeuristicTurn('What did you think?', '', 2);
     test.assertTrue(withRepair >= withoutRepair, 'Repair move should not reduce score');
   });
 
   test.it('should not add bonus for normal questions', () => {
-    const score = scoreQuestionTurn('What was your background?', '', 2);
+    const score = scoreQuestionHeuristicTurn('What was your background?', '', 2);
     test.assertTrue(score >= 0 && score <= 1.0, 'Score should be between 0 and 1');
   });
 
   test.it('should cap at 1.0 when adding bonus', () => {
     // A perfect question with a repair phrase should not exceed 1.0
-    const score = scoreQuestionTurn(
+    const score = scoreQuestionHeuristicTurn(
       'Let me rephrase — specifically, when the transition happened, what was your reaction?',
       '',
       0
     );
     test.assertTrue(score <= 1.0, `Score should be capped at 1.0, got ${score}`);
+  });
+});
+
+// ============================================================================
+// TEST 8: STRUCTURAL/SAFETY GATES ARE MULTIPLICATIVE, NOT AVERAGED
+// ============================================================================
+
+test.describe('Multiplicative Structural/Safety Gates (fixes averaging-dilutes-penalties bug)', () => {
+  test.it('a double-barreled+leading question is cut to exactly 70% of its non-violating counterpart', () => {
+    // Same question content, minus the "and...?" double-barrel / "don't you think" leading phrasing.
+    const clean = scoreQuestionHeuristicTurn('What was your background?', '', 2);
+    const violating = scoreQuestionHeuristicTurn("What was your background and don't you think that was a mistake?", '', 2);
+    test.assertAlmostEqual(violating / clean, 0.70, 0.001, 'Structural gate should apply exactly a 0.70x multiplier');
+    test.assertTrue(violating < clean, 'A double-barreled+leading question must score lower than its clean counterpart');
+  });
+
+  test.it('an insulting, privacy-invasive question is cut far more severely than a structural-only violation', () => {
+    const respectful = scoreQuestionHeuristicTurn('What is your perspective on the situation?', '', 2);
+    const violating = scoreQuestionHeuristicTurn("That was stupid — what's your bank account information?", '', 2);
+    test.assertTrue(violating < respectful * 0.3, `Expected the safety gate's 0.20x cut to clearly outweigh a 0.70x structural cut, got ratio ${(violating / respectful).toFixed(3)}`);
+  });
+});
+
+// ============================================================================
+// TEST 9: REDO GUARANTEE — A BETTER REDO MUST VISIBLY RAISE TRUST
+// ============================================================================
+
+test.describe('applyRedoGuarantee', () => {
+  test.it('a strictly better redo question must raise trust above the original turn\'s result', () => {
+    const trustBefore = 0.4, originalScore = 0.3, originalTrustAfter = 0.46;
+    const newScore = 0.8; // clearly better than the original attempt
+    const result = applyRedoGuarantee(trustBefore, newScore, originalScore, originalTrustAfter, false);
+    test.assertTrue(result > originalTrustAfter, `Better question must raise trust above the original turn's result (${originalTrustAfter}), got ${result}`);
+  });
+
+  test.it('does not override the EMA when it already moved in the right direction on its own', () => {
+    const trustBefore = 0.1, originalScore = 0.2, originalTrustAfter = 0.17;
+    const newScore = 0.9; // EMA alone already produces a big jump above originalTrustAfter
+    const normal = computeTrustUpdate(trustBefore, newScore, false).trustAfter;
+    const result = applyRedoGuarantee(trustBefore, newScore, originalScore, originalTrustAfter, false);
+    test.assertAlmostEqual(result, normal, 0.001, 'Should not interfere when the EMA already satisfies the guarantee on its own');
+  });
+
+  test.it('never exceeds the [0.1, 0.9] clamp even at the extremes', () => {
+    const result = applyRedoGuarantee(0.88, 1.0, 0.1, 0.89, false);
+    test.assertTrue(result <= 0.9, `Expected result <= 0.9, got ${result}`);
+  });
+
+  test.it('a worse redo question symmetrically must not read as an improvement', () => {
+    const trustBefore = 0.6, originalScore = 0.8, originalTrustAfter = 0.65;
+    const newScore = 0.2; // clearly worse than the original attempt
+    const result = applyRedoGuarantee(trustBefore, newScore, originalScore, originalTrustAfter, false);
+    test.assertTrue(result < originalTrustAfter, `Worse question must not read as an improvement over ${originalTrustAfter}, got ${result}`);
   });
 });
 

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scoring Sandbox (dev tool)</title>
+  <style>
+    :root {
+      --good: #2e7d32;
+      --ok: #b8860b;
+      --bad: #c62828;
+      --border: #ddd;
+      --bg: #fafafa;
+    }
+    body {
+      font-family: 'Open Sans', Arial, sans-serif;
+      margin: 0;
+      padding: 24px 32px 60px;
+      background: var(--bg);
+      color: #222;
+    }
+    h1 { margin: 0 0 4px; font-size: 22px; }
+    .subtitle { color: #555; margin: 0 0 20px; max-width: 760px; line-height: 1.5; }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 20px;
+      padding: 12px 16px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .controls label { font-size: 14px; display: flex; align-items: center; gap: 6px; }
+    .controls button {
+      padding: 8px 16px;
+      border-radius: 6px;
+      border: 1px solid #333;
+      background: #222;
+      color: #fff;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .controls button:disabled { opacity: 0.5; cursor: wait; }
+    .controls .note { font-size: 12px; color: #777; }
+
+    .overall-banner {
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      font-weight: 600;
+      display: none;
+    }
+    .overall-banner.pass { background: #e8f5e9; color: var(--good); border: 1px solid var(--good); display: block; }
+    .overall-banner.fail { background: #ffebee; color: var(--bad); border: 1px solid var(--bad); display: block; }
+
+    .personality-section {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 18px;
+      margin-bottom: 18px;
+    }
+    .personality-section h2 { margin: 0 0 4px; font-size: 17px; }
+    .personality-section .fairness-line { font-size: 13px; margin-bottom: 10px; }
+    .fairness-line.pass { color: var(--good); }
+    .fairness-line.fail { color: var(--bad); }
+    .fairness-line .violation { display: block; margin-left: 14px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+    th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; color: #888; }
+    td.bucket-good { border-left: 3px solid var(--good); }
+    td.bucket-ok { border-left: 3px solid var(--ok); }
+    td.bucket-bad { border-left: 3px solid var(--bad); }
+    .question-text { font-style: italic; }
+    .score-pill {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 13px;
+      color: #fff;
+    }
+    .bad-flag { color: var(--bad); font-size: 12px; margin-top: 2px; }
+    .llm-note { color: #666; font-size: 12px; margin-top: 2px; }
+  </style>
+</head>
+<body>
+  <h1>Scoring Sandbox</h1>
+  <p class="subtitle">
+    Dev tool — not part of the main app. Runs a curated set of good/ok/bad questions through the
+    same consolidated scoring functions the live interview page uses (<code>reading-page-scoring.js</code>),
+    for each of the 6 personalities, so you can eyeball whether grading changes actually make the
+    system fairer before shipping them.
+  </p>
+
+  <div class="controls">
+    <button id="runBtn">Run heuristic scoring</button>
+    <label>
+      <input type="checkbox" id="llmToggle">
+      Also run the live LLM judge
+    </label>
+    <span class="note">(requires <code>node index.js</code> running locally — this page must be opened via that server's URL, not file://)</span>
+  </div>
+
+  <div id="overallBanner" class="overall-banner"></div>
+  <div id="results"></div>
+
+  <script type="module" src="scoring-sandbox-ui.js"></script>
+</body>
+</html>

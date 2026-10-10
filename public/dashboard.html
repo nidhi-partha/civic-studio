@@ -60,12 +60,39 @@
       gap: 20px;
     }
     .interview-card {
+      position: relative;
       background: white;
       border-radius: 12px;
       padding: 20px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.1);
       cursor: pointer;
       transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .delete-interview-btn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 32px;
+      height: 32px;
+      border: none;
+      border-radius: 6px;
+      background: rgba(220, 53, 69, 0.08);
+      color: #dc3545;
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, color 0.15s;
+    }
+    .delete-interview-btn:hover {
+      background: #dc3545;
+      color: #fff;
+    }
+    .delete-interview-btn:disabled {
+      opacity: 0.5;
+      cursor: wait;
     }
     .interview-card:hover {
       transform: translateY(-2px);
@@ -209,7 +236,12 @@
       collection,
       getDocs,
       query,
-      orderBy
+      orderBy,
+      doc,
+      deleteDoc,
+      storage,
+      ref,
+      deleteObject
     } from './firebase-init.js';
 
     let currentUser = null;
@@ -273,7 +305,10 @@
             intervieweeInfo: data.intervieweeInfo || '',
             updatedAt: data.updatedAt?.toDate?.() || new Date(),
             createdAt: data.createdAt?.toDate?.() || new Date(),
-            isCompleted: data.isCompleted || false
+            isCompleted: data.isCompleted || false,
+            // Kept so delete can best-effort clean up the question/answer audio files in
+            // Storage too, instead of leaving them orphaned once the Firestore doc is gone.
+            audioSegments: data.readingPageState?.audioSegments || []
           };
           allInterviews.push(interview);
         });
@@ -375,6 +410,18 @@
         date.className = 'interview-date';
         date.textContent = `Last updated: ${interview.updatedAt.toLocaleDateString()} ${interview.updatedAt.toLocaleTimeString()}`;
 
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'delete-interview-btn';
+        deleteBtn.title = 'Delete this interview';
+        deleteBtn.setAttribute('aria-label', 'Delete this interview');
+        deleteBtn.textContent = '🗑';
+        deleteBtn.addEventListener('click', (e) => {
+          // Don't let the card's own click handler navigate into the interview.
+          e.stopPropagation();
+          handleDeleteInterview(interview, card);
+        });
+
+        card.appendChild(deleteBtn);
         card.appendChild(name);
         if (interview.intervieweeInfo) {
           card.appendChild(meta);
@@ -384,6 +431,53 @@
       });
 
       container.appendChild(grid);
+    }
+
+    /**
+     * Deletes one interview: confirms with the user, best-effort deletes its question/answer
+     * audio files from Storage, deletes the Firestore document, then removes the card from
+     * the DOM (showing the empty state if that was the last one in its section).
+     */
+    async function handleDeleteInterview(interview, cardEl) {
+      const confirmed = window.confirm(
+        `Delete this interview with ${interview.name}? This cannot be undone.`
+      );
+      if (!confirmed) return;
+
+      const deleteBtn = cardEl.querySelector('.delete-interview-btn');
+      if (deleteBtn) deleteBtn.disabled = true;
+
+      try {
+        // Best-effort: clean up any audio files this interview uploaded, so they don't sit
+        // around in Storage once the Firestore doc referencing them is gone. A failure here
+        // should never block deleting the interview itself.
+        const storagePaths = (interview.audioSegments || [])
+          .flatMap((seg) => [seg.questionAudioPath, seg.answerAudioPath])
+          .filter(Boolean);
+        await Promise.all(
+          storagePaths.map((path) =>
+            deleteObject(ref(storage, path)).catch((err) =>
+              console.warn('Failed to delete audio file (continuing):', path, err)
+            )
+          )
+        );
+
+        await deleteDoc(doc(db, 'users', currentUser.uid, 'interviews', interview.id));
+
+        const grid = cardEl.parentElement;
+        cardEl.remove();
+        if (grid && grid.children.length === 0) {
+          grid.parentElement.innerHTML = `
+            <div class="empty-state">
+              <p>${interview.isCompleted ? 'No completed interviews yet.' : 'No ongoing interviews yet.'}</p>
+            </div>
+          `;
+        }
+      } catch (error) {
+        console.error('Error deleting interview:', error);
+        alert('Failed to delete this interview. Please try again.');
+        if (deleteBtn) deleteBtn.disabled = false;
+      }
     }
 
     // New interview button

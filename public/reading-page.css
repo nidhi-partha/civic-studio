@@ -598,36 +598,10 @@ body {
     margin: 10px;
 }
 
-.trust-meter {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    margin: 0 12px;
-}
-
-.trust-meter-label {
-    font-size: 11px;
-    color: #555;
-    margin-bottom: 4px;
-    white-space: nowrap;
-    font-family: 'Open Sans', sans-serif;
-    font-weight: 600;
-    letter-spacing: 0.3px;
-}
-
-.trust-meter-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.trust-meter-avatar {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    object-fit: cover;
-    flex-shrink: 0;
-}
+/* .trust-meter-track / .trust-meter-fill are the generic bar look, reused below at a
+   smaller scale inside each .qa-block (see .qa-trust-meter). The old single bottom-bar
+   meter (.trust-meter / .trust-meter-label / .trust-meter-row / .trust-meter-avatar) has
+   been removed in favor of per-block meters. */
 
 .trust-meter-track {
     width: 100px;
@@ -643,6 +617,68 @@ body {
     border-radius: 5px;
     background: linear-gradient(to right, #e05252, #f0a500, #4caf50);
     transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Per-block trust meter. Sits in normal flow UNDER the question/answer text (not an
+   absolute-positioned corner badge) so it reads as "this block's trust", not a page
+   decoration. */
+.qa-trust-meter {
+    margin-top: 12px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.qa-trust-meter .trust-meter-track {
+    flex: 1 1 auto;
+    width: auto;
+    height: 8px;
+}
+
+.qa-trust-meter-label {
+    font-size: 13px;
+    line-height: 1;
+    white-space: nowrap;
+    color: #555;
+    font-weight: 600;
+}
+
+.qa-trust-meter.is-placeholder .trust-meter-track {
+    background: #d8dde3;
+}
+
+.qa-trust-meter.is-placeholder .trust-meter-fill {
+    display: none;
+}
+
+.qa-trust-meter.is-recalculating {
+    opacity: 0.5;
+    animation: qaTrustPulse 1s ease-in-out infinite;
+}
+
+@keyframes qaTrustPulse {
+    50% { opacity: 1; }
+}
+
+/* Marks a block whose displayed answer predates a trust correction cascaded in from an
+   earlier redo — the content itself was never rewritten, only the trust numbers were. */
+.qa-block.needs-review {
+    outline: 2px dashed #e0a500;
+    outline-offset: 2px;
+}
+
+.qa-review-badge {
+    margin-top: 8px;
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 600;
+    color: #8a5a00;
+    background: #fff3d6;
+    border: 1px solid #e0a500;
+    border-radius: 12px;
+    padding: 3px 10px;
 }
 
 .followup-hint {
